@@ -205,6 +205,7 @@ class Ultrahuman247Data(Base247DataTemplate):
             end_datetime=end_dt,
             external_id=f"sleep-{normalized_sleep.get('ultrahuman_date')}",
             provider=self.provider_name,
+            source=self.provider_name,
             user_id=user_id,
         )
 

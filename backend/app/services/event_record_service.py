@@ -103,6 +103,41 @@ class EventRecordService(
             source=data_source.source,
         )
 
+    def create_workout_with_detail(
+        self,
+        db_session: DbSession,
+        record: EventRecordCreate,
+        detail: EventRecordDetailCreate,
+    ) -> EventRecord:
+        """Create a workout EventRecord and WorkoutDetails in a single transaction.
+
+        Uses flush + savepoint pattern so multiple activities can be saved in
+        one request without leaving the session in an inconsistent state between
+        iterations.  Duplicate records are silently skipped via the savepoints
+        inside create_and_flush().
+        """
+        created = self.crud.create_and_flush(db_session, record)
+        updated_detail = detail.model_copy(update={"record_id": created.id})
+
+        sp = db_session.begin_nested()
+        try:
+            self.event_record_detail_repo.create_and_flush(db_session, updated_detail)
+            sp.commit()
+        except Exception:
+            sp.rollback()
+
+        if created.data_source_id is not None:
+            data_source = self.data_source_repo.get(db_session, created.data_source_id)
+            if data_source is not None:
+                _record, _data_source, _detail = created, data_source, updated_detail
+
+                @sa_event.listens_for(db_session, "after_commit", once=True)
+                def _dispatch_webhook(session: DbSession) -> None:  # noqa: ARG001
+                    self._emit_event_record_webhook(_record, _data_source, _detail)
+
+        db_session.commit()
+        return created
+
     def create_detail(
         self,
         db_session: DbSession,

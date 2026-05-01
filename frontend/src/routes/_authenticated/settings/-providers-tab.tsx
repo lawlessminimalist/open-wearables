@@ -6,15 +6,27 @@ import {
 import { Loader2, CheckCircle2 } from 'lucide-react';
 import { ProviderItem } from '@/components/settings/providers/provider-item';
 import { Button } from '@/components/ui/button';
+import type { Provider } from '@/lib/api/types';
 
 export function ProvidersTab() {
+  // Fetch all providers (cloud_only=false) so credential-based providers are included
   const {
-    data: providers,
+    data: allProviders,
     isLoading,
     error,
     refetch,
-  } = useOAuthProviders(true);
+  } = useOAuthProviders(false);
   const updateMutation = useUpdateOAuthProviders();
+
+  const oauthProviders: Provider[] = useMemo(
+    () => allProviders?.filter((p) => p.has_cloud_api) ?? [],
+    [allProviders]
+  );
+
+  const credentialProviders: Provider[] = useMemo(
+    () => allProviders?.filter((p) => !p.has_cloud_api) ?? [],
+    [allProviders]
+  );
 
   const [localToggleStates, setLocalToggleStates] = useState<
     Record<string, boolean>
@@ -22,23 +34,22 @@ export function ProvidersTab() {
   const [hasInitialized, setHasInitialized] = useState(false);
 
   useEffect(() => {
-    if (providers && providers.length > 0 && !hasInitialized) {
+    if (allProviders && allProviders.length > 0 && !hasInitialized) {
       const initial: Record<string, boolean> = {};
-      providers.forEach((provider) => {
+      allProviders.forEach((provider) => {
         initial[provider.provider] = provider.is_enabled;
       });
       setLocalToggleStates(initial);
       setHasInitialized(true);
     }
-  }, [providers, hasInitialized]);
+  }, [allProviders, hasInitialized]);
 
   const hasChanges = useMemo(() => {
-    if (!providers || !hasInitialized) return false;
-
-    return providers.some(
+    if (!allProviders || !hasInitialized) return false;
+    return allProviders.some(
       (provider) => localToggleStates[provider.provider] !== provider.is_enabled
     );
-  }, [providers, localToggleStates]);
+  }, [allProviders, localToggleStates, hasInitialized]);
 
   const handleToggleProvider = (providerId: string) => {
     setLocalToggleStates((prev) => ({
@@ -48,7 +59,7 @@ export function ProvidersTab() {
   };
 
   const handleSave = async () => {
-    if (!providers) return;
+    if (!allProviders) return;
     await updateMutation.mutateAsync({ providers: localToggleStates });
   };
 
@@ -65,7 +76,7 @@ export function ProvidersTab() {
   if (error) {
     return (
       <div className="bg-zinc-900/50 border border-zinc-800 rounded-xl p-12 text-center">
-        <p className="text-zinc-400 mb-4">Failed to load OAuth providers</p>
+        <p className="text-zinc-400 mb-4">Failed to load providers</p>
         <Button variant="outline" onClick={() => refetch()}>
           Retry
         </Button>
@@ -73,10 +84,10 @@ export function ProvidersTab() {
     );
   }
 
-  if (!providers || providers.length === 0) {
+  if (!allProviders || allProviders.length === 0) {
     return (
       <div className="bg-zinc-900/50 border border-zinc-800 rounded-xl p-12 text-center">
-        <p className="text-zinc-400">No OAuth providers available</p>
+        <p className="text-zinc-400">No providers available</p>
       </div>
     );
   }
@@ -84,35 +95,60 @@ export function ProvidersTab() {
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-xl font-medium text-white">OAuth Providers</h2>
+        <h2 className="text-xl font-medium text-white">Providers</h2>
         <p className="text-sm text-zinc-500 mt-1">
-          Configure which OAuth providers are available to your end users
+          Configure which providers are available to your end users
         </p>
       </div>
 
-      <div className="bg-zinc-900/50 border border-zinc-800 rounded-xl overflow-hidden">
-        <div className="px-6 py-4 border-b border-zinc-800">
-          <h3 className="text-sm font-medium text-white">
-            Available Providers
-          </h3>
-          <p className="text-xs text-zinc-500 mt-1">
-            Enable or disable OAuth providers for your application
-          </p>
+      {oauthProviders.length > 0 && (
+        <div className="bg-zinc-900/50 border border-zinc-800 rounded-xl overflow-hidden">
+          <div className="px-6 py-4 border-b border-zinc-800">
+            <h3 className="text-sm font-medium text-white">OAuth Providers</h3>
+            <p className="text-xs text-zinc-500 mt-1">
+              Providers that connect via OAuth — users authorise in their browser
+            </p>
+          </div>
+          <div className="divide-y divide-zinc-800/50">
+            {oauthProviders.map((provider) => (
+              <ProviderItem
+                key={provider.provider}
+                provider={provider}
+                localToggleState={
+                  localToggleStates[provider.provider] ?? provider.is_enabled
+                }
+                onToggle={() => handleToggleProvider(provider.provider)}
+              />
+            ))}
+          </div>
         </div>
+      )}
 
-        <div className="divide-y divide-zinc-800/50">
-          {providers.map((provider) => (
-            <ProviderItem
-              key={provider.provider}
-              provider={provider}
-              localToggleState={
-                localToggleStates[provider.provider] ?? provider.is_enabled
-              }
-              onToggle={() => handleToggleProvider(provider.provider)}
-            />
-          ))}
+      {credentialProviders.length > 0 && (
+        <div className="bg-zinc-900/50 border border-zinc-800 rounded-xl overflow-hidden">
+          <div className="px-6 py-4 border-b border-zinc-800">
+            <h3 className="text-sm font-medium text-white">
+              Credential Providers
+            </h3>
+            <p className="text-xs text-zinc-500 mt-1">
+              Providers that authenticate with stored credentials — configure
+              via environment variables
+            </p>
+          </div>
+          <div className="divide-y divide-zinc-800/50">
+            {credentialProviders.map((provider) => (
+              <ProviderItem
+                key={provider.provider}
+                provider={provider}
+                localToggleState={
+                  localToggleStates[provider.provider] ?? provider.is_enabled
+                }
+                onToggle={() => handleToggleProvider(provider.provider)}
+              />
+            ))}
+          </div>
         </div>
-      </div>
+      )}
 
       {hasChanges && (
         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-4 rounded-lg border border-zinc-700 bg-zinc-900 px-6 py-3 shadow-lg shadow-black/50">

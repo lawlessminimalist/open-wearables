@@ -1,7 +1,7 @@
 import contextlib
 from uuid import UUID
 
-from fastapi import APIRouter, Response, status
+from fastapi import APIRouter, HTTPException, Response, status
 
 from app.database import DbSession
 from app.models import ProviderSetting
@@ -49,6 +49,33 @@ def get_connections_endpoint(
     return [
         _with_capabilities(conn, settings_map) for conn in user_connection_service.get_connections_by_user(db, user_id)
     ]
+
+
+@router.post("/users/{user_id}/connections/{provider}", response_model=UserConnectionWithCapabilities)
+def connect_credential_provider_endpoint(
+    user_id: UUID,
+    provider: ProviderName,
+    db: DbSession,
+    _api_key: ApiKeyDep,
+):
+    """Create or reactivate a connection for a credential-based (non-OAuth) provider.
+
+    Use this for providers like `garmin_connect` that authenticate via environment
+    variables rather than OAuth. The connection record is created immediately; credentials
+    are read from the server environment when a sync is triggered.
+
+    Returns 400 if the provider uses OAuth (those connect via the OAuth authorize flow).
+    """
+    strategy = factory.get_provider(provider.value)
+    if strategy.oauth is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Provider '{provider.value}' uses OAuth. Use GET /oauth/{provider.value}/authorize to connect.",
+        )
+
+    connection = user_connection_service.ensure_credential_connection(db, user_id, provider.value)
+    settings_map = provider_settings_repo.get_all(db)
+    return _with_capabilities(connection, settings_map)
 
 
 @router.delete("/users/{user_id}/connections/{provider}")

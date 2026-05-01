@@ -3,6 +3,7 @@ from app.services.providers.apple.strategy import AppleStrategy
 from app.services.providers.base_strategy import BaseProviderStrategy
 from app.services.providers.fitbit.strategy import FitbitStrategy
 from app.services.providers.garmin.strategy import GarminStrategy
+from app.services.providers.garmin_connect.strategy import GarminConnectStrategy
 from app.services.providers.google.strategy import GoogleStrategy
 from app.services.providers.oura.strategy import OuraStrategy
 from app.services.providers.polar.strategy import PolarStrategy
@@ -26,6 +27,8 @@ class ProviderFactory:
                 return GoogleStrategy()
             case ProviderName.GARMIN.value:
                 return GarminStrategy()
+            case ProviderName.GARMIN_CONNECT.value:
+                return GarminConnectStrategy()
             case ProviderName.SUUNTO.value:
                 return SuuntoStrategy()
             case ProviderName.POLAR.value:

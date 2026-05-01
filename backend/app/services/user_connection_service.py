@@ -56,6 +56,11 @@ class UserConnectionService(
             raise ResourceNotFoundError("connection", user_id)
 
     @handle_exceptions
+    def ensure_credential_connection(self, db_session: DbSession, user_id: UUID, provider: str) -> UserConnection:
+        """Create or reactivate a connection for a credential-based (non-OAuth) provider."""
+        return self.crud.ensure_sdk_connection(db_session, user_id, provider)
+
+    @handle_exceptions
     def stamp_last_synced_at(self, db_session: DbSession, user_id: UUID, provider: str) -> None:
         """Stamp last_synced_at=now on the user's connection for the given provider.
 

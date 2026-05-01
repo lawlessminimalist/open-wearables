@@ -85,9 +85,6 @@ def _get_db_dependency() -> Iterator[Session]:
     db = SessionLocal()
     try:
         yield db
-    except Exception as exc:
-        db.rollback()
-        raise exc
     finally:
         db.close()
 

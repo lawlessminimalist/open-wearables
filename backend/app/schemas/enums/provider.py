@@ -8,6 +8,7 @@ class ProviderName(str, Enum):
     SAMSUNG = "samsung"
     GOOGLE = "google"
     GARMIN = "garmin"
+    GARMIN_CONNECT = "garmin_connect"
     POLAR = "polar"
     SUUNTO = "suunto"
     WHOOP = "whoop"

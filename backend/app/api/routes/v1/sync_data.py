@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Annotated, Any
 from uuid import UUID
@@ -82,6 +82,15 @@ def sync_user_data(
     samples: Annotated[bool, Query(description="Synchronize sample data (Polar only)")] = False,
     zones: Annotated[bool, Query(description="Synchronize zones data (Polar only)")] = False,
     route: Annotated[bool, Query(description="Synchronize route data (Polar only)")] = False,
+    # Generic date range (all providers, async=false)
+    start_date: Annotated[
+        str | None,
+        Query(description="Start of sync range as ISO 8601 datetime (e.g. 2026-03-11T00:00:00Z)"),
+    ] = None,
+    end_date: Annotated[
+        str | None,
+        Query(description="End of sync range as ISO 8601 datetime"),
+    ] = None,
     # Garmin-specific parameters (backfill API - no pull token required)
     summary_start_time: Annotated[
         str | None,
@@ -144,13 +153,16 @@ def sync_user_data(
                 ),
             )
 
+        resolved_start = start_date or summary_start_time
+        resolved_end = end_date or summary_end_time
+
         start_date_iso: str | None = None
         if since > 0:
             start_date_iso = datetime.fromtimestamp(since).isoformat()
-        elif summary_start_time:
-            start_date_iso = summary_start_time
+        elif resolved_start:
+            start_date_iso = resolved_start
 
-        task = _queue_pull_sync(user_id, provider.value, start_date_iso, summary_end_time)
+        task = _queue_pull_sync(user_id, provider.value, start_date_iso, resolved_end)
         return {
             "success": True,
             "async": True,
@@ -194,8 +206,21 @@ def sync_user_data(
             if load_fn is None:
                 results["data_247"] = None
             else:
-                start_dt = datetime.fromtimestamp(since) if since else datetime.now() - timedelta(days=30)
-                end_dt = datetime.now()
+                resolved_start_247 = start_date or summary_start_time
+                resolved_end_247 = end_date or summary_end_time
+
+                if resolved_start_247:
+                    start_dt = datetime.fromisoformat(resolved_start_247.replace("Z", "+00:00"))
+                elif since:
+                    start_dt = datetime.fromtimestamp(since, tz=timezone.utc)
+                else:
+                    start_dt = datetime.now(timezone.utc) - timedelta(days=30)
+
+                if resolved_end_247:
+                    end_dt = datetime.fromisoformat(resolved_end_247.replace("Z", "+00:00"))
+                else:
+                    end_dt = datetime.now(timezone.utc)
+
                 results["data_247"] = load_fn(db, user_id, start_time=start_dt, end_time=end_dt)
         elif data_type == SyncDataType.DATA_247:
             raise HTTPException(

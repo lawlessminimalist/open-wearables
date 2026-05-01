@@ -95,9 +95,13 @@ class DataSourceRepository(
             device_type=device_type.value if device_type != DeviceType.UNKNOWN else None,
             original_source_name=original_source_name,
         )
-        result = self.create(db_session, create_payload)
-        assert result is not None
-        return result
+        # Flush rather than commit so the DataSource is created within the
+        # caller's transaction. This avoids a "committed state" error when the
+        # caller still needs to add and commit the EventRecord in the same txn.
+        new_source = DataSource(**create_payload.model_dump())
+        db_session.add(new_source)
+        db_session.flush()
+        return new_source
 
     def _infer_device_type(
         self,

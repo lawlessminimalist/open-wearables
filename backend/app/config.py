@@ -112,6 +112,12 @@ class Settings(BaseSettings):
     garmin_redirect_uri: str | None = None  # Deprecated: use API_BASE_URL
     garmin_default_scope: str = ""  # Scope is managed at app creation in Garmin Developer Portal
 
+    # GARMIN CONNECT DIRECT LOGIN SETTINGS (alternative to the OAuth-based garmin provider)
+    garmin_connect_email: str | None = None
+    garmin_connect_password: SecretStr | None = None
+    # Directory where garminconnect session tokens are persisted between restarts
+    garmin_connect_token_store: str | None = None
+
     # POLAR OAUTH SETTINGS
     polar_client_id: str | None = None
     polar_client_secret: SecretStr | None = None
