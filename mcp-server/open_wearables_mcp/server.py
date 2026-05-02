@@ -263,6 +263,41 @@ def list_user_connections(user_id: str) -> dict:
 
 
 
+@mcp.tool
+def list_tombstones(
+    user_id: str,
+    category: str | None = None,
+) -> dict:
+    """List soft-deleted event tombstones for a user.
+
+    Tombstones represent records that were removed via the 'Remove' action.
+    They prevent the record from being re-imported on future syncs. Delete a
+    tombstone to re-enable sync import of that session.
+
+    Args:
+        user_id: UUID of the user.
+        category: Optional filter — 'sleep' or 'workout'.
+    """
+    tombstones = _get(f"/api/v1/users/{user_id}/tombstones", {"category": category})
+    return {"tombstones": tombstones} if isinstance(tombstones, list) else tombstones
+
+
+@mcp.tool
+def delete_tombstone(user_id: str, tombstone_id: str) -> dict:
+    """Remove a tombstone, re-enabling sync import of the associated record.
+
+    After removal the record will be re-imported on the next sync from its provider.
+
+    Args:
+        user_id: UUID of the user.
+        tombstone_id: UUID of the tombstone to remove.
+    """
+    with _client() as client:
+        r = client.delete(f"/api/v1/users/{user_id}/tombstones/{tombstone_id}")
+        r.raise_for_status()
+        return {"success": True, "tombstone_id": tombstone_id}
+
+
 def main() -> None:
     mcp.run()
 
