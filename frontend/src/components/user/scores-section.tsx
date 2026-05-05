@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from 'react';
-import { format } from 'date-fns';
 import { Line, LineChart, CartesianGrid, XAxis, YAxis } from 'recharts';
 import {
   Moon,
@@ -16,6 +15,7 @@ import {
 } from 'lucide-react';
 import { useHealthScores } from '@/hooks/api/use-health';
 import { useDateRange } from '@/hooks/use-date-range';
+import { formatInTz } from '@/lib/dates';
 import type { DateRangeValue } from '@/components/ui/date-range-selector';
 import { SourceBadge } from '@/components/common/source-badge';
 import { SectionHeader } from '@/components/common/section-header';
@@ -152,7 +152,7 @@ function buildChartData(
     .sort((a, b) => a[0].localeCompare(b[0]))
     .map(([date, dateScores]) => {
       const point: Record<string, string | number> = {
-        date: format(new Date(date + 'T00:00:00'), 'MMM d'),
+        date: formatInTz(`${date}T00:00:00Z`, 'UTC', 'MMM d'),
       };
       for (const score of dateScores) {
         if (score.value !== null && score.provider) {
@@ -253,10 +253,10 @@ function ScoreDayCard({
         <div className="flex items-start justify-between">
           <div>
             <p className="text-sm font-medium text-foreground">
-              {format(new Date(date + 'T00:00:00'), 'EEE, MMM d')}
+              {formatInTz(`${date}T00:00:00Z`, 'UTC', 'EEE, MMM d')}
             </p>
             <p className="text-xs text-muted-foreground">
-              {format(new Date(date + 'T00:00:00'), 'yyyy')}
+              {formatInTz(`${date}T00:00:00Z`, 'UTC', 'yyyy')}
             </p>
           </div>
 

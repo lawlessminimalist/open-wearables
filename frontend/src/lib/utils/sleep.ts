@@ -4,6 +4,7 @@ import type {
   SleepStagesSummary,
 } from '@/lib/api/types';
 import { formatMinutes } from './format';
+import { toLocalWallTime, DEFAULT_DISPLAY_TZ } from '@/lib/dates';
 
 /**
  * Sleep stage type keys
@@ -113,7 +114,8 @@ export interface SleepStats {
  * Calculate aggregated statistics from sleep summaries
  */
 export function calculateSleepStats(
-  summaries: SleepSummary[]
+  summaries: SleepSummary[],
+  tz: string = DEFAULT_DISPLAY_TZ,
 ): SleepStats | null {
   if (summaries.length === 0) {
     return null;
@@ -151,14 +153,15 @@ export function calculateSleepStats(
   const avgAwake = nightCount > 0 ? totalAwake / nightCount : 0;
   const avgStagesTotal = avgDeep + avgRem + avgLight + avgAwake;
 
-  // Calculate average bedtime
+  // Calculate average bedtime in the caller's display timezone (not the
+  // browser's local zone). toLocalWallTime returns a Date whose getHours/
+  // getMinutes return the wall-clock fields in `tz`.
   const bedtimes = summaries
     .map((s) => s.start_time)
     .filter((t): t is string => t !== null)
     .map((t) => {
-      const date = new Date(t);
-      // Convert to minutes from midnight, handling late night times
-      let minutes = date.getHours() * 60 + date.getMinutes();
+      const zoned = toLocalWallTime(t, tz);
+      let minutes = zoned.getHours() * 60 + zoned.getMinutes();
       // If before 6am, treat as previous day's evening
       if (minutes < 360) minutes += 1440;
       return minutes;

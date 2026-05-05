@@ -34,6 +34,8 @@ import { ActivitySection } from '@/components/user/activity-section';
 import { BodySection } from '@/components/user/body-section';
 import { WorkoutSection } from '@/components/user/workout-section';
 import { ScoresSection } from '@/components/user/scores-section';
+import { DisplayTimezoneProvider } from '@/contexts/display-timezone';
+import { TimezoneSelector } from '@/components/common/timezone-selector';
 import type { DateRangeValue } from '@/components/ui/date-range-selector';
 import {
   AlertDialog,
@@ -242,6 +244,7 @@ function UserDetailPage() {
   }
 
   return (
+    <DisplayTimezoneProvider userId={userId}>
     <div className="p-8 space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
@@ -271,6 +274,7 @@ function UserDetailPage() {
           )}
         </div>
         <div className="flex items-center gap-2">
+          <TimezoneSelector userTimezone={user?.timezone ?? null} />
           <Button variant="secondary" onClick={handleCopyPairLink}>
             {copied ? (
               <>
@@ -474,5 +478,6 @@ function UserDetailPage() {
         </DialogContent>
       </Dialog>
     </div>
+    </DisplayTimezoneProvider>
   );
 }

@@ -196,6 +196,75 @@ Join our Discord community to connect with other developers, get help, share ide
 
 [![Discord](https://img.shields.io/badge/Discord-Join%20Chat-5865F2?logo=discord&logoColor=white)](https://discord.gg/qrcfFnNE6H)
 
+## Fork Patches
+
+This repository is a fork of [the-momentum/open-wearables](https://github.com/the-momentum/open-wearables).
+Local fixes are tracked under [`ow-patches/`](ow-patches/) so we keep a clean record
+of where we diverge from upstream and can A/B compare upstream behavior against ours
+without restoring code from git history.
+
+**Layout:**
+
+```
+ow-patches/
+├── PATCHES.md           # registry — one entry per patch, explains intent + retire condition
+├── apply.py             # imports each patch and monkey-patches at import time
+├── check_upstream.py    # `python ow-patches/check_upstream.py` — compares upstream/main against our markers
+└── local/<patch_id>.py  # patched implementation, one file per patch_id
+```
+
+`apply.py` is invoked once from [`backend/app/__init__.py`](backend/app/__init__.py),
+so every entry point (FastAPI app, Celery worker, migrations, pytest) ends up with
+the same patches applied.
+
+**Check whether upstream has caught up:**
+
+```bash
+# one-time setup if not already configured
+git remote add upstream https://github.com/the-momentum/open-wearables.git
+
+python ow-patches/check_upstream.py
+```
+
+The script fetches `upstream/main`, greps for each patch's `upstream_equivalent_check`
+marker (path-qualified with `path::pattern` for narrow matches), and prints a summary
+table flagging candidates for retirement. Nothing is auto-retired.
+
+**Disable a single patch (A/B test):**
+
+Edit [`ow-patches/apply.py`](ow-patches/apply.py) and flip the relevant entry in
+`PATCHES_ENABLED` to `False`. Restart the backend. That patch reverts to upstream
+behavior; nothing else moves. Composed patches (e.g. `fix-hrv-nightly-aggregate`,
+`fix-sleep-stages-missing`, and `fix-sleep-timezone` all live inside the same
+`get_sleep_summaries` replacement) toggle independently — see `compose()` in
+`apply.py`.
+
+A small number of changes are **structural** and not toggleable from `apply.py`:
+the `User.timezone` column + migration, and the `basal_calories_kcal` /
+`timezone` / `start_time_local` / `end_time_local` fields added to response
+schemas. Disabling the corresponding patch causes those fields to come back as
+`null`, which is upstream-equivalent enough — see `PATCHES.md` for which patches
+have a structural component.
+
+**Container deployment.** `docker-compose.yml` bind-mounts `./ow-patches` into
+the app, celery-worker, and celery-beat containers at `/root_project/ow-patches`
+and exports `OW_PATCHES_DIR=/root_project/ow-patches`. `app/__init__.py` resolves
+the patch directory in this order: `$OW_PATCHES_DIR` → sibling of `app/` (container
+layout) → repo root (host layout). To pick up patch changes without rebuilding the
+image, run `docker compose restart app celery-worker celery-beat` (or `docker compose
+watch` for live reloads).
+
+**Retire a patch when upstream covers it:**
+
+1. Verify upstream's implementation matches: same provider scope, same field
+   names, same units, nullability equal or stricter than ours.
+2. In `ow-patches/PATCHES.md`, change `status:` from `local_only` /
+   `upstream_candidate` to `retired`.
+3. In `ow-patches/apply.py`, set the patch's `PATCHES_ENABLED` entry to `False`.
+4. Keep `ow-patches/local/<patch_id>.py` for reference (don't delete) — it's
+   our institutional memory of what we changed and why.
+5. Re-run the test suite to confirm upstream covers the cases our patch did.
+
 ## Contributing
 
 Contributions are welcome! This project aims to be a community-driven solution for wearable data integration.

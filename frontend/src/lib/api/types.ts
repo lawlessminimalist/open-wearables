@@ -17,6 +17,8 @@ export interface UserRead {
   last_name: string | null;
   email: string | null;
   external_user_id: string | null;
+  /** IANA timezone (e.g. "Australia/Brisbane"). Anchors backend daily-bucket dates. */
+  timezone: string | null;
   last_synced_at: string | null;
   last_synced_provider: string | null;
   has_active_connection: boolean;
@@ -27,6 +29,7 @@ export interface UserCreate {
   last_name?: string | null;
   email?: string | null;
   external_user_id?: string | null;
+  timezone?: string | null;
 }
 
 export interface UserQueryParams {
@@ -74,6 +77,7 @@ export interface UserUpdate {
   last_name?: string | null;
   email?: string | null;
   external_user_id?: string | null;
+  timezone?: string | null;
 }
 
 export interface PresignedURLRequest {
@@ -301,8 +305,16 @@ export interface SleepSessionsParams {
 export interface SleepSummary {
   date: string;
   source: DataSource;
+  /** IANA timezone the daily bucket is anchored to (the user's User.timezone). */
+  timezone: string | null;
+  /** Sleep start in UTC. */
   start_time: string | null;
+  /** Sleep end in UTC. */
   end_time: string | null;
+  /** Sleep start rendered in the user's timezone (only set when timezone is known). */
+  start_time_local: string | null;
+  /** Sleep end rendered in the user's timezone (only set when timezone is known). */
+  end_time_local: string | null;
   duration_minutes: number | null;
   time_in_bed_minutes: number | null;
   efficiency_percent: number | null;
@@ -414,6 +426,8 @@ export interface IntensityMinutes {
 export interface ActivitySummary {
   date: string;
   source: DataSource;
+  /** IANA timezone the daily bucket is anchored to. */
+  timezone: string | null;
   // Step and movement metrics
   steps: number | null;
   distance_meters: number | null;
@@ -422,6 +436,8 @@ export interface ActivitySummary {
   elevation_meters: number | null;
   // Energy metrics
   active_calories_kcal: number | null;
+  /** Basal/BMR energy when source provides it (Garmin); null otherwise. */
+  basal_calories_kcal: number | null;
   total_calories_kcal: number | null;
   // Duration metrics
   active_minutes: number | null;

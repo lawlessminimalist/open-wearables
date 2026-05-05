@@ -22,6 +22,12 @@ class HeartRateStats(BaseModel):
 class ActivitySummary(BaseModel):
     date: date
     source: SourceMetadata
+    timezone: str | None = Field(
+        None,
+        description="IANA timezone the daily bucket is anchored to (the user's User.timezone). "
+        "Frontends rendering local datetimes from raw timeseries can use this to convert.",
+        example="Australia/Brisbane",
+    )
     # Step and movement metrics
     steps: int | None = Field(None, description="Total step count", example=8432)
     distance_meters: float | None = Field(None, example=6240.5)
@@ -30,7 +36,14 @@ class ActivitySummary(BaseModel):
     elevation_meters: float | None = Field(None, description="Raw total elevation gain", example=36.0)
     # Energy metrics
     active_calories_kcal: float | None = Field(None, description="Active energy burned", example=342.5)
-    total_calories_kcal: float | None = Field(None, description="Active + basal energy", example=2150.0)
+    basal_calories_kcal: float | None = Field(
+        None, description="Basal/BMR energy burned (when source provides it)", example=1620.0
+    )
+    total_calories_kcal: float | None = Field(
+        None,
+        description="active + basal when both are available; null when basal is not provided by the source",
+        example=2150.0,
+    )
     # Duration metrics (based on step threshold)
     active_minutes: int | None = Field(None, description="Minutes with activity above threshold", example=60)
     sedentary_minutes: int | None = Field(None, description="Minutes with minimal activity", example=480)
@@ -50,8 +63,22 @@ class SleepStagesSummary(BaseModel):
 class SleepSummary(BaseModel):
     date: date
     source: SourceMetadata
-    start_time: datetime | None = None
-    end_time: datetime | None = None
+    timezone: str | None = Field(
+        None,
+        description="IANA timezone of the user at the time of recording (e.g. 'Australia/Brisbane'). "
+        "When set, consumers can render start_time/end_time in local time.",
+        example="Australia/Brisbane",
+    )
+    start_time: datetime | None = Field(None, description="Sleep start in UTC")
+    end_time: datetime | None = Field(None, description="Sleep end in UTC")
+    start_time_local: datetime | None = Field(
+        None,
+        description="Sleep start rendered in the user's timezone (only set when timezone is known)",
+    )
+    end_time_local: datetime | None = Field(
+        None,
+        description="Sleep end rendered in the user's timezone (only set when timezone is known)",
+    )
     duration_minutes: int | None = Field(None, description="Total sleep duration excluding naps", example=450)
     time_in_bed_minutes: int | None = Field(None, description="Total time in bed excluding naps", example=480)
     efficiency_percent: float | None = Field(None, ge=0, le=100, example=89.5)
