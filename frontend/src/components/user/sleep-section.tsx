@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
-import { format } from 'date-fns';
+import { useDisplayTimezone } from '@/contexts/display-timezone';
+import { formatInTz } from '@/lib/dates';
 import {
   Bar,
   BarChart,
@@ -175,6 +176,7 @@ function SleepSessionRow({
   const [isExpanded, setIsExpanded] = useState(false);
   const [showDelete, setShowDelete] = useState(false);
   const deleteSleep = useDeleteSleepSession(userId);
+  const { displayTz } = useDisplayTimezone();
 
   // Fetch heart rate time series data when expanded
   const { data: hrData, isLoading: hrLoading } = useTimeSeries(userId, {
@@ -186,7 +188,10 @@ function SleepSessionRow({
   });
 
   // Prepare HR chart data using utility function
-  const hrChartData = useMemo(() => prepareHrChartData(hrData?.data), [hrData]);
+  const hrChartData = useMemo(
+    () => prepareHrChartData(hrData?.data, displayTz),
+    [hrData, displayTz],
+  );
 
   // Get detail fields using utility function
   const detailFields = useMemo(
@@ -219,11 +224,11 @@ function SleepSessionRow({
           </div>
           <div className="flex items-center gap-2">
             <p className="text-sm font-medium text-white">
-              {format(new Date(session.end_time), 'EEE, MMM d')}
+              {formatInTz(session.end_time, displayTz, 'EEE, MMM d')}
             </p>
           </div>
           <p className="text-xs text-zinc-500">
-            {format(new Date(session.end_time), 'yyyy')}
+            {formatInTz(session.end_time, displayTz, 'yyyy')}
           </p>
         </div>
 
@@ -276,7 +281,7 @@ function SleepSessionRow({
               <Clock className="h-4 w-4 text-sky-400" />
               <div>
                 <p className="text-sm font-medium text-white">
-                  {format(new Date(session.start_time), 'h:mm a')}
+                  {formatInTz(session.start_time, displayTz, 'h:mm a')}
                 </p>
                 <p className="text-xs text-zinc-500">Bedtime</p>
               </div>
@@ -287,7 +292,7 @@ function SleepSessionRow({
               <Clock className="h-4 w-4 text-amber-400" />
               <div>
                 <p className="text-sm font-medium text-white">
-                  {format(new Date(session.end_time), 'h:mm a')}
+                  {formatInTz(session.end_time, displayTz, 'h:mm a')}
                 </p>
                 <p className="text-xs text-zinc-500">Wake</p>
               </div>
@@ -499,6 +504,7 @@ export function SleepSection({
 }: SleepSectionProps) {
   // Cursor-based pagination for sleep sessions
   const pagination = useCursorPagination();
+  const { displayTz } = useDisplayTimezone();
 
   // Date range hooks
   const { startDate, endDate } = useDateRange(dateRange);
@@ -532,10 +538,12 @@ export function SleepSection({
   const handleNextPage = () => pagination.goToNextPage(nextCursor);
   const handlePrevPage = pagination.goToPrevPage;
 
-  // Calculate aggregate statistics from date-range filtered summaries
+  // Calculate aggregate statistics from date-range filtered summaries.
+  // Pass displayTz so avgBedtime is computed in the user's chosen viewing zone
+  // rather than the browser's local zone.
   const stats = useMemo(
-    () => calculateSleepStats(sleepSummaries?.data || []),
-    [sleepSummaries]
+    () => calculateSleepStats(sleepSummaries?.data || [], displayTz),
+    [sleepSummaries, displayTz]
   );
 
   // Get displayed sessions from current page data
@@ -558,7 +566,11 @@ export function SleepSection({
     return [...summaries]
       .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
       .map((s) => ({
-        date: format(new Date(s.date), 'MMM d'),
+        // s.date is a YYYY-MM-DD calendar date already bucketed by the user's
+        // backend timezone (see fix-activity-summary-utc-bucketing). Render it
+        // as UTC midnight so the label stays "May 3" regardless of the
+        // dashboard's display timezone — calendar dates aren't shifted.
+        date: formatInTz(`${s.date}T00:00:00Z`, 'UTC', 'MMM d'),
         value: currentMetric.getChartValue(s),
       }));
   }, [sleepSummaries, currentMetric]);

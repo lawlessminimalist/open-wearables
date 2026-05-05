@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
-import { format } from 'date-fns';
 import { CartesianGrid, Line, LineChart, XAxis, YAxis } from 'recharts';
+import { useDisplayTimezone } from '@/contexts/display-timezone';
+import { formatInTz } from '@/lib/dates';
 import {
   ChevronDown,
   ChevronUp,
@@ -62,6 +63,7 @@ function WorkoutRow({
   const deleteWorkout = useDeleteWorkout(userId);
   const style = getWorkoutStyle(workout.type || workout.category || '');
   const category = getWorkoutCategory(workout.type || workout.category || '');
+  const { displayTz } = useDisplayTimezone();
 
   // Get workout start and end times
   const startTime = workout.start_time || workout.start_datetime || '';
@@ -76,8 +78,11 @@ function WorkoutRow({
     limit: 100,
   });
 
-  // Prepare HR chart data using utility function
-  const hrChartData = useMemo(() => prepareHrChartData(hrData?.data), [hrData]);
+  // Prepare HR chart data using utility function (display tz for x-axis labels)
+  const hrChartData = useMemo(
+    () => prepareHrChartData(hrData?.data, displayTz),
+    [hrData, displayTz],
+  );
 
   // Get detail fields using utility function
   const detailFields = useMemo(
@@ -107,7 +112,7 @@ function WorkoutRow({
           <div className="w-32 flex-shrink-0">
             <p className="text-sm font-medium text-white">{style.label}</p>
             <p className="text-xs text-zinc-500">
-              {workoutDate ? format(new Date(workoutDate), 'MMM d, yyyy') : '-'}
+              {workoutDate ? formatInTz(workoutDate, displayTz, 'MMM d, yyyy') : '-'}
             </p>
             {workout.source?.provider && (
               <SourceBadge

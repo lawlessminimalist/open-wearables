@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
-import { format } from 'date-fns';
 import { Bar, BarChart, CartesianGrid, XAxis, YAxis } from 'recharts';
+import { formatInTz } from '@/lib/dates';
 import {
   Activity,
   ChevronDown,
@@ -196,13 +196,14 @@ function ActivityDayRow({ summary }: { summary: ActivitySummary }) {
         className="w-full px-4 py-3 flex items-center text-left"
         disabled={!hasDetails}
       >
-        {/* Date */}
+        {/* Date — calendar bucket from the backend; render as UTC midnight so
+            the "May 3" label stays stable regardless of display timezone. */}
         <div className="w-28 flex-shrink-0">
           <p className="text-sm font-medium text-white">
-            {format(new Date(summary.date), 'EEE, MMM d')}
+            {formatInTz(`${summary.date}T00:00:00Z`, 'UTC', 'EEE, MMM d')}
           </p>
           <p className="text-xs text-zinc-500">
-            {format(new Date(summary.date), 'yyyy')}
+            {formatInTz(`${summary.date}T00:00:00Z`, 'UTC', 'yyyy')}
           </p>
           {summary.source?.provider && (
             <SourceBadge provider={summary.source.provider} className="mt-1" />
@@ -384,7 +385,7 @@ export function ActivitySection({
     return [...summaries]
       .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
       .map((s) => ({
-        date: format(new Date(s.date), 'MMM d'),
+        date: formatInTz(`${s.date}T00:00:00Z`, 'UTC', 'MMM d'),
         value: currentMetric.getChartValue(s),
       }));
   }, [summaryData, currentMetric]);

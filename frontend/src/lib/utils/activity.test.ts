@@ -9,11 +9,13 @@ function makeSummary(
   return {
     date: '2026-01-01',
     source: { provider: 'apple_health', device: null },
+    timezone: null,
     steps: null,
     distance_meters: null,
     floors_climbed: null,
     elevation_meters: null,
     active_calories_kcal: null,
+    basal_calories_kcal: null,
     total_calories_kcal: null,
     active_minutes: null,
     sedentary_minutes: null,

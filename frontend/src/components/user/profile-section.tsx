@@ -15,6 +15,7 @@ import {
 } from '@/components/ui/dialog';
 import { formatDate, truncateId } from '@/lib/utils/format';
 import { copyToClipboard } from '@/lib/utils/clipboard';
+import { COMMON_TIMEZONES } from '@/lib/dates';
 import { ConnectionCard } from '@/components/user/connection-card';
 import { DataSummarySection } from '@/components/user/data-summary-section';
 
@@ -36,6 +37,7 @@ export function ProfileSection({ userId }: ProfileSectionProps) {
     last_name: '',
     email: '',
     external_user_id: '',
+    timezone: '',
   });
 
   useEffect(() => {
@@ -45,6 +47,7 @@ export function ProfileSection({ userId }: ProfileSectionProps) {
         last_name: user.last_name || '',
         email: user.email || '',
         external_user_id: user.external_user_id || '',
+        timezone: user.timezone || '',
       });
     }
   }, [user]);
@@ -81,6 +84,7 @@ export function ProfileSection({ userId }: ProfileSectionProps) {
           last_name: editForm.last_name || null,
           email: editForm.email || null,
           external_user_id: editForm.external_user_id || null,
+          timezone: editForm.timezone.trim() || null,
         },
       },
       {
@@ -155,6 +159,16 @@ export function ProfileSection({ userId }: ProfileSectionProps) {
                   <p className="text-xs text-zinc-500 mb-1">Created</p>
                   <p className="text-sm text-zinc-300">
                     {formatDate(user?.created_at)}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-xs text-zinc-500 mb-1">Timezone</p>
+                  <p className="text-sm text-zinc-300">
+                    {user?.timezone || (
+                      <span className="text-zinc-500 italic">
+                        not set — daily buckets default to UTC
+                      </span>
+                    )}
                   </p>
                 </div>
               </div>
@@ -293,6 +307,32 @@ export function ProfileSection({ userId }: ProfileSectionProps) {
               />
               <p className="text-xs text-zinc-500">
                 Optional identifier from your system
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="timezone" className="text-zinc-300">
+                Timezone
+              </Label>
+              <Input
+                id="timezone"
+                list="timezone-suggestions"
+                value={editForm.timezone}
+                onChange={(e) =>
+                  setEditForm({ ...editForm, timezone: e.target.value })
+                }
+                placeholder="Australia/Brisbane"
+                className="bg-zinc-800 border-zinc-700"
+              />
+              <datalist id="timezone-suggestions">
+                {COMMON_TIMEZONES.map((tz) => (
+                  <option key={tz.value} value={tz.value}>
+                    {tz.label}
+                  </option>
+                ))}
+              </datalist>
+              <p className="text-xs text-zinc-500">
+                IANA timezone name. Anchors daily-bucket dates on summaries
+                (e.g. "May 3" stays May 3 in this zone). Leave blank for UTC.
               </p>
             </div>
           </div>

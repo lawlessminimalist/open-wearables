@@ -49,6 +49,7 @@
               "providers/supported",
               "providers/coverage",
               "providers/garmin-api-integration",
+              "providers/garmin-connect-credentials",
               "providers/garmin-data-pipeline"
             ]
           },

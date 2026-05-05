@@ -50,6 +50,9 @@ class UserQueryParams(BaseModel):
     )
 
 
+_TIMEZONE_DESCRIPTION = "IANA timezone name (e.g. 'Australia/Brisbane'). Consumers can render local datetimes from UTC."
+
+
 class UserRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -59,6 +62,7 @@ class UserRead(BaseModel):
     last_name: str | None = None
     email: EmailStr | None = None
     external_user_id: str | None = Field(None, description=_EXTERNAL_USER_ID_DEPRECATION, deprecated=True)
+    timezone: str | None = Field(None, description=_TIMEZONE_DESCRIPTION)
     last_synced_at: datetime | None = None
     last_synced_provider: str | None = None
 
@@ -68,6 +72,7 @@ class UserCreate(BaseModel):
     last_name: str | None = Field(None, max_length=100)
     email: EmailStr | None = None
     external_user_id: str | None = Field(None, description=_EXTERNAL_USER_ID_DEPRECATION, deprecated=True)
+    timezone: str | None = Field(None, max_length=50, description=_TIMEZONE_DESCRIPTION)
 
 
 class UserCreateInternal(UserCreate):
@@ -80,6 +85,7 @@ class UserUpdate(BaseModel):
     last_name: str | None = Field(None, max_length=100)
     email: EmailStr | None = None
     external_user_id: str | None = Field(None, description=_EXTERNAL_USER_ID_DEPRECATION, deprecated=True)
+    timezone: str | None = Field(None, max_length=50, description=_TIMEZONE_DESCRIPTION)
 
 
 class UserUpdateInternal(UserUpdate):
