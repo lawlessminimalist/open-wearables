@@ -36,6 +36,29 @@ os.environ["SECRET_KEY"] = "test-secret-key-for-testing-only"
 os.environ["MASTER_KEY"] = "dGVzdC1tYXN0ZXIta2V5LWZvci10ZXN0aW5nLW9ubHk="  # base64 test key
 
 
+_PROD_DB_NAMES = {"open-wearables", "open_wearables"}
+
+
+def _assert_not_prod_db(url: str) -> None:
+    """Hard-abort if the URL points at a known production database name.
+
+    The test session calls metadata.drop_all() on teardown — running it
+    against the production database would destroy all app data.
+    """
+    from urllib.parse import urlparse  # noqa: PLC0415
+    parsed = urlparse(url)
+    db_name = parsed.path.lstrip("/")
+    if db_name in _PROD_DB_NAMES:
+        raise RuntimeError(
+            f"TEST_DATABASE_URL points at '{db_name}' which matches a known "
+            "production database name. Refusing to run tests against it — "
+            "the teardown would call drop_all() and destroy all app data.\n\n"
+            "Use a separate test database, e.g.:\n"
+            "  TEST_DATABASE_URL=postgresql+psycopg://open-wearables:open-wearables"
+            "@localhost:5431/open_wearables_test"
+        )
+
+
 @pytest.fixture(scope="session")
 def _postgres_url() -> Generator[str, None, None]:
     """
@@ -46,6 +69,7 @@ def _postgres_url() -> Generator[str, None, None]:
     """
     explicit_url = os.environ.get("TEST_DATABASE_URL")
     if explicit_url:
+        _assert_not_prod_db(explicit_url)
         yield explicit_url
         return
 
