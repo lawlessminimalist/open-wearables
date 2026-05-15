@@ -247,11 +247,11 @@ class WhoopWorkouts(BaseWorkoutsTemplate):
             components=components or None,
         )
 
-    def _normalize_workout(  # type: ignore[override]
+    def _normalize_workout(
         self,
         raw_workout: WhoopWorkoutJSON,
         user_id: UUID,
-    ) -> tuple[EventRecordCreate, EventRecordDetailCreate, HealthScoreCreate | None]:
+    ) -> tuple[EventRecordCreate, EventRecordDetailCreate, HealthScoreCreate | None]:  # ty:ignore[invalid-method-override]
         """Normalize Whoop workout to EventRecordCreate, EventRecordDetailCreate, and strain HealthScoreCreate."""
         workout_id = uuid4()
 
@@ -418,7 +418,11 @@ class WhoopWorkouts(BaseWorkoutsTemplate):
                     strain_scores.append(strain_score)
 
         if strain_scores:
-            health_score_service.bulk_create(db, strain_scores)
-            db.commit()
+            try:
+                health_score_service.bulk_create(db, strain_scores)
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
 
         return count

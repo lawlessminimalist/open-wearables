@@ -1,6 +1,7 @@
 import logging
 import sys
 from logging import Formatter, LogRecord, StreamHandler, getLogger
+from typing import cast
 
 from celery import Celery, signals
 from celery import current_app as current_celery_app
@@ -74,7 +75,7 @@ def init_raw_payload_storage(**kwargs) -> None:
 
 
 def create_celery() -> Celery:
-    celery_app: Celery = current_celery_app  # type: ignore[assignment]
+    celery_app = cast(Celery, current_celery_app)
     celery_app.conf.update(
         broker_url=settings.redis_url,
         result_backend=settings.redis_url,
@@ -135,6 +136,12 @@ def create_celery() -> Celery:
         "fill-missing-resilience-scores": {
             "task": "app.integrations.celery.tasks.fill_missing_resilience_scores_task.fill_missing_resilience_scores",
             "schedule": float(settings.resilience_score_interval_seconds),
+            "args": (),
+            "kwargs": {},
+        },
+        "renew-oura-webhooks-monthly": {
+            "task": "app.integrations.celery.tasks.renew_oura_webhooks_task.renew_oura_webhooks",
+            "schedule": crontab(day_of_month=1, hour=0, minute=0),  # 1st of each month at 00:00 UTC
             "args": (),
             "kwargs": {},
         },

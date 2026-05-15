@@ -3,7 +3,7 @@ from datetime import datetime, time, timedelta
 from uuid import UUID
 
 from psycopg.errors import UniqueViolation
-from sqlalchemy import Date, String, asc, case, cast, func, literal_column, text, tuple_
+from sqlalchemy import Date, Interval, String, asc, case, cast, func, literal_column, text, tuple_
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError as SQLAIntegrityError
 
@@ -282,7 +282,7 @@ class DataPointSeriesRepository(
                 limit = params.limit or 50
                 results = query.limit(limit + 1).all()
                 # Reverse to get correct order
-                return list(reversed(results)), total_count
+                return list(reversed(results)), total_count  # ty:ignore[invalid-return-type]
             # Forward pagination: get items AFTER cursor
             query = query.filter(
                 tuple_(self.model.recorded_at, self.model.id) > (cursor_ts, cursor_id),
@@ -293,7 +293,7 @@ class DataPointSeriesRepository(
 
         # Limit + 1 to check for next page
         limit = params.limit or 50
-        return query.limit(limit + 1).all(), total_count
+        return query.limit(limit + 1).all(), total_count  # ty:ignore[invalid-return-type]
 
     def get_total_count(self, db_session: DbSession) -> int:
         """Get total count of all data points."""
@@ -501,10 +501,15 @@ class DataPointSeriesRepository(
         distance_id = get_series_type_id(SeriesType.distance_walking_running)
         flights_id = get_series_type_id(SeriesType.flights_climbed)
 
+        local_date = cast(
+            self.model.recorded_at + cast(func.coalesce(self.model.zone_offset, "+00:00"), Interval),
+            Date,
+        )
+
         # Build aggregation query
         results = (
             db_session.query(
-                cast(self.model.recorded_at, Date).label("activity_date"),
+                local_date.label("activity_date"),
                 DataSource.source.label("source"),
                 DataSource.device_model.label("device_model"),
                 # Steps - sum for the day
@@ -541,18 +546,19 @@ class DataPointSeriesRepository(
             .join(DataSource, self.model.data_source_id == DataSource.id)
             .filter(
                 DataSource.user_id == user_id,
-                self.model.recorded_at >= start_date,
-                cast(self.model.recorded_at, Date) < cast(end_date, Date),
+                self.model.recorded_at >= start_date - timedelta(days=1),
+                local_date >= cast(start_date, Date),
+                local_date < cast(end_date, Date),
                 self.model.series_type_definition_id.in_(
                     [steps_id, energy_id, basal_energy_id, hr_id, distance_id, flights_id]
                 ),
             )
             .group_by(
-                cast(self.model.recorded_at, Date),
+                local_date,
                 DataSource.source,
                 DataSource.device_model,
             )
-            .order_by(asc(cast(self.model.recorded_at, Date)))
+            .order_by(asc(local_date))
             .all()
         )
 
@@ -602,13 +608,18 @@ class DataPointSeriesRepository(
         """
         steps_id = get_series_type_id(SeriesType.steps)
 
+        local_date = cast(
+            self.model.recorded_at + cast(func.coalesce(self.model.zone_offset, "+00:00"), Interval),
+            Date,
+        )
+
         # Create minute bucket expression using literal 'minute' text
         minute_trunc = func.date_trunc(literal_column("'minute'"), self.model.recorded_at)
 
         # Subquery: bucket step data by minute and sum steps per minute
         minute_bucket = (
             db_session.query(
-                cast(self.model.recorded_at, Date).label("activity_date"),
+                local_date.label("activity_date"),
                 DataSource.source,
                 DataSource.device_model,
                 minute_trunc.label("minute_bucket"),
@@ -617,12 +628,13 @@ class DataPointSeriesRepository(
             .join(DataSource, self.model.data_source_id == DataSource.id)
             .filter(
                 DataSource.user_id == user_id,
-                self.model.recorded_at >= start_date,
-                cast(self.model.recorded_at, Date) < cast(end_date, Date),
+                self.model.recorded_at >= start_date - timedelta(days=1),
+                local_date >= cast(start_date, Date),
+                local_date < cast(end_date, Date),
                 self.model.series_type_definition_id == steps_id,
             )
             .group_by(
-                cast(self.model.recorded_at, Date),
+                local_date,
                 DataSource.source,
                 DataSource.device_model,
                 minute_trunc,
@@ -698,13 +710,18 @@ class DataPointSeriesRepository(
         """
         hr_id = get_series_type_id(SeriesType.heart_rate)
 
+        local_date = cast(
+            self.model.recorded_at + cast(func.coalesce(self.model.zone_offset, "+00:00"), Interval),
+            Date,
+        )
+
         # Create minute bucket expression
         minute_trunc = func.date_trunc(literal_column("'minute'"), self.model.recorded_at)
 
         # Subquery: bucket HR data by minute and get avg HR per minute
         minute_bucket = (
             db_session.query(
-                cast(self.model.recorded_at, Date).label("activity_date"),
+                local_date.label("activity_date"),
                 DataSource.source,
                 DataSource.device_model,
                 minute_trunc.label("minute_bucket"),
@@ -713,12 +730,13 @@ class DataPointSeriesRepository(
             .join(DataSource, self.model.data_source_id == DataSource.id)
             .filter(
                 DataSource.user_id == user_id,
-                self.model.recorded_at >= start_date,
-                cast(self.model.recorded_at, Date) < cast(end_date, Date),
+                self.model.recorded_at >= start_date - timedelta(days=1),
+                local_date >= cast(start_date, Date),
+                local_date < cast(end_date, Date),
                 self.model.series_type_definition_id == hr_id,
             )
             .group_by(
-                cast(self.model.recorded_at, Date),
+                local_date,
                 DataSource.source,
                 DataSource.device_model,
                 minute_trunc,

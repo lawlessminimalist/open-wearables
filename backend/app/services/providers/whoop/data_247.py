@@ -184,11 +184,11 @@ class Whoop247Data(Base247DataTemplate):
             components=components or None,
         )
 
-    def normalize_sleep(  # type: ignore[override]
+    def normalize_sleep(
         self,
         raw_sleep: dict[str, Any],
         user_id: UUID,
-    ) -> tuple[dict[str, Any], HealthScoreCreate | None]:
+    ) -> tuple[dict[str, Any], HealthScoreCreate | None]:  # ty:ignore[invalid-method-override]
         """Normalize Whoop sleep data to our schema."""
         # Extract basic fields
         sleep_id = raw_sleep.get("id")
@@ -415,6 +415,7 @@ class Whoop247Data(Base247DataTemplate):
                 if health_score:
                     health_scores.append(health_score)
             except Exception as e:
+                db.rollback()
                 log_structured(
                     self.logger,
                     "warning",
@@ -466,6 +467,7 @@ class Whoop247Data(Base247DataTemplate):
         try:
             results["sleep_sessions_synced"] = self.load_and_save_sleep(db, user_id, start_time, end_time)
         except Exception as e:
+            db.rollback()
             log_structured(
                 self.logger,
                 "error",
@@ -478,6 +480,7 @@ class Whoop247Data(Base247DataTemplate):
         try:
             results["recovery_samples_synced"] = self.load_and_save_recovery(db, user_id, start_time, end_time)
         except Exception as e:
+            db.rollback()
             log_structured(
                 self.logger,
                 "error",
@@ -490,6 +493,7 @@ class Whoop247Data(Base247DataTemplate):
         try:
             results["body_measurement_samples_synced"] = self.load_and_save_body_measurement(db, user_id)
         except Exception as e:
+            db.rollback()
             log_structured(
                 self.logger,
                 "error",
@@ -632,6 +636,7 @@ class Whoop247Data(Base247DataTemplate):
 
         if samples_to_create:
             timeseries_service.bulk_create_samples(db, samples_to_create)
+            db.commit()
 
         return len(samples_to_create)
 
@@ -739,11 +744,11 @@ class Whoop247Data(Base247DataTemplate):
             components=components or None,
         )
 
-    def normalize_recovery(  # type: ignore[override]
+    def normalize_recovery(
         self,
         raw_recovery: dict[str, Any],
         user_id: UUID,
-    ) -> tuple[dict[str, Any], HealthScoreCreate | None]:
+    ) -> tuple[dict[str, Any], HealthScoreCreate | None]:  # ty:ignore[invalid-method-override]
         """Normalize Whoop recovery data to our schema.
 
         Extracts recovery metrics from the score object:
@@ -814,7 +819,6 @@ class Whoop247Data(Base247DataTemplate):
 
         # Map WHOOP fields to SeriesType
         metrics = [
-            ("recovery_score", SeriesType.recovery_score),
             ("resting_heart_rate", SeriesType.resting_heart_rate),
             ("hrv_rmssd_milli", SeriesType.heart_rate_variability_rmssd),
             ("spo2_percentage", SeriesType.oxygen_saturation),
@@ -848,6 +852,7 @@ class Whoop247Data(Base247DataTemplate):
 
         if samples_to_create:
             timeseries_service.bulk_create_samples(db, samples_to_create)
+            db.commit()
 
         return len(samples_to_create)
 
@@ -919,6 +924,7 @@ class Whoop247Data(Base247DataTemplate):
                     if health_score:
                         health_scores.append(health_score)
             except Exception as e:
+                db.rollback()
                 log_structured(
                     self.logger,
                     "warning",
