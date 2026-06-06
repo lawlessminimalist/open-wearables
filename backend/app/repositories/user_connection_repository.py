@@ -288,6 +288,20 @@ class UserConnectionRepository(CrudRepository[UserConnection, UserConnectionCrea
         db_session.refresh(connection)
         return connection
 
+    def mark_expired(self, db_session: DbSession, connection: UserConnection) -> UserConnection:
+        """Mark a connection EXPIRED after an unrecoverable auth failure (e.g. a rejected refresh).
+
+        The connection can only be recovered by re-authorising. Setting EXPIRED stops it from
+        reporting as active/healthy and excludes it from the active-only sync queries, so a dead
+        connection fails loudly instead of silently syncing zero records.
+        """
+        connection.status = ConnectionStatus.EXPIRED
+        connection.updated_at = datetime.now(timezone.utc)
+        db_session.add(connection)
+        db_session.commit()
+        db_session.refresh(connection)
+        return connection
+
     def update_connection_info(
         self,
         db_session: DbSession,

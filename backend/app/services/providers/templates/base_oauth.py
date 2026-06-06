@@ -11,7 +11,12 @@ from uuid import UUID
 import httpx
 from fastapi import HTTPException
 from redis import Redis
-from starlette.status import HTTP_400_BAD_REQUEST, HTTP_500_INTERNAL_SERVER_ERROR
+from starlette.status import (
+    HTTP_400_BAD_REQUEST,
+    HTTP_401_UNAUTHORIZED,
+    HTTP_500_INTERNAL_SERVER_ERROR,
+    HTTP_502_BAD_GATEWAY,
+)
 
 from app.database import DbSession
 from app.integrations.redis_client import get_redis_client
@@ -169,6 +174,7 @@ class BaseOAuthTemplate(ABC):
             return token_response
 
         except httpx.HTTPStatusError as e:
+            status_code = e.response.status_code
             log_structured(
                 logger,
                 "error",
@@ -176,9 +182,27 @@ class BaseOAuthTemplate(ABC):
                 provider=self.provider_name,
                 task="refresh_access_token",
                 user_id=str(user_id),
-                status_code=e.response.status_code,
+                status_code=status_code,
             )
-            raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail=f"Failed to refresh token: {e.response.text}")
+            # A 4xx from the token endpoint (e.g. invalid_grant) means the refresh token is
+            # invalid / expired / revoked: the connection can only be recovered by re-authorising.
+            # Mark it EXPIRED so it stops reporting as active/healthy and is dropped from the
+            # active-only sync queries, and raise 401 so callers treat this as a fatal auth error
+            # rather than a recoverable, silently-skipped per-request failure.
+            if status_code < HTTP_500_INTERNAL_SERVER_ERROR:
+                connection = self.connection_repo.get_by_user_and_provider(db, user_id, self.provider_name)
+                if connection:
+                    self.connection_repo.mark_expired(db, connection)
+                raise HTTPException(
+                    status_code=HTTP_401_UNAUTHORIZED,
+                    detail=f"{self.provider_name} authorization expired; re-authorization required.",
+                )
+            # 5xx: transient provider-side error. Keep the connection active and let the next
+            # scheduled sync retry instead of forcing an unnecessary re-auth.
+            raise HTTPException(
+                status_code=HTTP_502_BAD_GATEWAY,
+                detail=f"Token refresh temporarily unavailable for {self.provider_name}: {e.response.text}",
+            )
         except Exception as e:
             log_structured(
                 logger,

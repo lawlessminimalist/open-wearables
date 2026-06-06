@@ -309,7 +309,12 @@ def sync_vendor_data(
                             )
                             provider_result.params["data_247"] = {"success": False, "error": str(e)}
 
-                    if not is_historical:
+                    # Only advance the live-sync cursor when nothing failed. Bumping it after a
+                    # failed sub-sync would silently skip the un-synced window on the next run.
+                    provider_failed = any(
+                        isinstance(r, dict) and r.get("success") is False for r in provider_result.params.values()
+                    )
+                    if not is_historical and not provider_failed:
                         user_connection_repo.update_last_synced_at(db, connection)
 
                     result.providers_synced[provider_name] = provider_result

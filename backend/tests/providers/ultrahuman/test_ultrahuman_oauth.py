@@ -7,15 +7,71 @@ Tests the UltrahumanOAuth class for OAuth 2.0 authentication flow with Ultrahuma
 from unittest.mock import MagicMock, patch
 
 import httpx
+import pytest
+from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.models import User
 from app.repositories.user_connection_repository import UserConnectionRepository
 from app.repositories.user_repository import UserRepository
+from app.schemas.auth import ConnectionStatus
 from app.schemas.auth.authentication_method import AuthenticationMethod
 from app.schemas.model_crud.credentials import OAuthTokenResponse
 from app.services.providers.ultrahuman.oauth import UltrahumanOAuth
-from tests.factories import UserFactory
+from tests.factories import UserConnectionFactory, UserFactory
+
+
+def _mock_token_error_response(status_code: int, text: str) -> MagicMock:
+    """Build a mock httpx response whose raise_for_status raises HTTPStatusError."""
+    response = MagicMock()
+    response.status_code = status_code
+    response.text = text
+    response.raise_for_status.side_effect = httpx.HTTPStatusError(
+        f"{status_code}", request=MagicMock(), response=response
+    )
+    return response
+
+
+class TestUltrahumanRefreshFailure:
+    """Refresh failures must fail loudly: invalidate the connection, not silently no-op."""
+
+    def _oauth(self) -> UltrahumanOAuth:
+        return UltrahumanOAuth(
+            user_repo=UserRepository(User),
+            connection_repo=UserConnectionRepository(),
+            provider_name="ultrahuman",
+            api_base_url="https://partner.ultrahuman.com",
+        )
+
+    @patch("httpx.post")
+    def test_rejected_refresh_marks_connection_expired_and_raises_401(self, mock_post: MagicMock, db: Session) -> None:
+        """A 4xx (invalid_grant) from the token endpoint marks the connection EXPIRED and raises 401."""
+        user = UserFactory()
+        connection = UserConnectionFactory(user=user, provider="ultrahuman", status=ConnectionStatus.ACTIVE)
+        mock_post.return_value = _mock_token_error_response(
+            400, '{"error":"invalid_grant","error_description":"...revoked..."}'
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            self._oauth().refresh_access_token(db, user.id, connection.refresh_token)
+
+        assert exc_info.value.status_code == 401
+        db.refresh(connection)
+        assert connection.status == ConnectionStatus.EXPIRED
+
+    @patch("httpx.post")
+    def test_transient_refresh_error_keeps_connection_active(self, mock_post: MagicMock, db: Session) -> None:
+        """A 5xx from the token endpoint is transient: surface 502 but keep the connection ACTIVE for retry."""
+        user = UserFactory()
+        connection = UserConnectionFactory(user=user, provider="ultrahuman", status=ConnectionStatus.ACTIVE)
+        mock_post.return_value = _mock_token_error_response(503, "service unavailable")
+
+        with pytest.raises(HTTPException) as exc_info:
+            self._oauth().refresh_access_token(db, user.id, connection.refresh_token)
+
+        assert exc_info.value.status_code == 502
+        db.refresh(connection)
+        assert connection.status == ConnectionStatus.ACTIVE
 
 
 class TestUltrahumanOAuthConfiguration:
