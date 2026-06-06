@@ -73,6 +73,24 @@ class TestUltrahumanRefreshFailure:
         db.refresh(connection)
         assert connection.status == ConnectionStatus.ACTIVE
 
+    @patch("httpx.post")
+    def test_rate_limited_refresh_keeps_connection_active(self, mock_post: MagicMock, db: Session) -> None:
+        """A 429 (rate limit) is transient, NOT an auth rejection: surface 502 and keep ACTIVE.
+
+        Regression: 429 < 500, so a naive 4xx==fatal check would wrongly expire a healthy
+        connection on a rate-limited refresh and silently halt its sync.
+        """
+        user = UserFactory()
+        connection = UserConnectionFactory(user=user, provider="ultrahuman", status=ConnectionStatus.ACTIVE)
+        mock_post.return_value = _mock_token_error_response(429, "too many requests")
+
+        with pytest.raises(HTTPException) as exc_info:
+            self._oauth().refresh_access_token(db, user.id, connection.refresh_token)
+
+        assert exc_info.value.status_code == 502
+        db.refresh(connection)
+        assert connection.status == ConnectionStatus.ACTIVE
+
 
 class TestUltrahumanOAuthConfiguration:
     """Tests for Ultrahuman OAuth configuration and endpoints."""

@@ -14,6 +14,8 @@ from redis import Redis
 from starlette.status import (
     HTTP_400_BAD_REQUEST,
     HTTP_401_UNAUTHORIZED,
+    HTTP_408_REQUEST_TIMEOUT,
+    HTTP_429_TOO_MANY_REQUESTS,
     HTTP_500_INTERNAL_SERVER_ERROR,
     HTTP_502_BAD_GATEWAY,
 )
@@ -34,6 +36,11 @@ from app.services.outgoing_webhooks.events import on_connection_created
 from app.utils.structured_logging import log_structured
 
 logger = logging.getLogger(__name__)
+
+# 4xx statuses that are transient, NOT an auth rejection: a rate-limit or timeout
+# on the token endpoint must not expire a healthy connection (which would silently
+# halt its sync). Treated like a 5xx — surface 502 and retry on the next sync.
+_TRANSIENT_REFRESH_STATUSES = frozenset({HTTP_408_REQUEST_TIMEOUT, HTTP_429_TOO_MANY_REQUESTS})
 
 
 class BaseOAuthTemplate(ABC):
@@ -184,24 +191,25 @@ class BaseOAuthTemplate(ABC):
                 user_id=str(user_id),
                 status_code=status_code,
             )
-            # A 4xx from the token endpoint (e.g. invalid_grant) means the refresh token is
-            # invalid / expired / revoked: the connection can only be recovered by re-authorising.
-            # Mark it EXPIRED so it stops reporting as active/healthy and is dropped from the
+            # Transient failures (5xx, or a 408/429 rate-limit/timeout on the token endpoint):
+            # keep the connection ACTIVE and let the next scheduled sync retry. Expiring it here
+            # would force an unnecessary re-auth and silently halt the connection's sync.
+            if status_code >= HTTP_500_INTERNAL_SERVER_ERROR or status_code in _TRANSIENT_REFRESH_STATUSES:
+                raise HTTPException(
+                    status_code=HTTP_502_BAD_GATEWAY,
+                    detail=f"Token refresh temporarily unavailable for {self.provider_name}: {e.response.text}",
+                )
+            # Remaining 4xx (400 invalid_grant, 401, 403): the refresh token is genuinely
+            # invalid / expired / revoked — recoverable only by re-authorising. Mark the
+            # connection EXPIRED so it stops reporting as active/healthy and is dropped from the
             # active-only sync queries, and raise 401 so callers treat this as a fatal auth error
             # rather than a recoverable, silently-skipped per-request failure.
-            if status_code < HTTP_500_INTERNAL_SERVER_ERROR:
-                connection = self.connection_repo.get_by_user_and_provider(db, user_id, self.provider_name)
-                if connection:
-                    self.connection_repo.mark_expired(db, connection)
-                raise HTTPException(
-                    status_code=HTTP_401_UNAUTHORIZED,
-                    detail=f"{self.provider_name} authorization expired; re-authorization required.",
-                )
-            # 5xx: transient provider-side error. Keep the connection active and let the next
-            # scheduled sync retry instead of forcing an unnecessary re-auth.
+            connection = self.connection_repo.get_by_user_and_provider(db, user_id, self.provider_name)
+            if connection:
+                self.connection_repo.mark_expired(db, connection)
             raise HTTPException(
-                status_code=HTTP_502_BAD_GATEWAY,
-                detail=f"Token refresh temporarily unavailable for {self.provider_name}: {e.response.text}",
+                status_code=HTTP_401_UNAUTHORIZED,
+                detail=f"{self.provider_name} authorization expired; re-authorization required.",
             )
         except Exception as e:
             log_structured(
