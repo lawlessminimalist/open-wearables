@@ -31,7 +31,7 @@ services:
       - REDIS_HOST=redis
       - OW_PATCHES_DIR=/root_project/ow-patches
     ports:
-      - "8000:8000"
+      - "8003:8000"
     volumes:
       # Fork-only patch system — see ../ow-patches/PATCHES.md.
       # Bind-mounted (not baked into the image) so toggling PATCHES_ENABLED
