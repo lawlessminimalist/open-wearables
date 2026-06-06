@@ -14,6 +14,24 @@ This file has two halves:
    not toggleable at runtime (the app is built once and served as static
    assets). Documented for institutional memory.
 
+**`replacement_kind` field.** Each patch declares how it relates to upstream so
+`check_upstream.py` can escalate drift correctly:
+
+- `wholesale-replace` (default if omitted) — the patch reimplements an upstream
+  method/body. These SHADOW upstream: a `git merge` will not conflict (we never
+  edit the upstream source file), so if upstream rewrites the method our copy
+  silently wins and drops upstream's changes. Drift on these is a **shadow risk**.
+- `decorate` — the patch wraps upstream's method and only post-processes the
+  result. It inherits upstream changes; drift is lower-risk (re-verify only).
+- `structural` — source edits (schema fields, columns, frontend). Upstream drift
+  surfaces as ordinary git conflicts at merge time, so the runtime drift check
+  doesn't apply.
+- `standalone` — a self-contained helper/function swap with no upstream body to
+  go stale.
+
+When in doubt, leave it `wholesale-replace`: a false "re-verify" costs one manual
+diff; a missed shadow is how `avg_hrv_rmssd_ms` silently went null.
+
 ---
 
 ## fix-hrv-source-unknown
@@ -101,7 +119,8 @@ This file has two halves:
 - upstream_issue_or_pr:      null
 - file:                      backend/app/services/providers/ultrahuman/data_247.py, backend/app/services/summaries_service.py
 - symbol:                    Ultrahuman247Data.normalize_sleep + SummariesService.get_sleep_summaries
-- what_we_changed:           Make Ultrahuman sleep-stage parsing robust to capitalization and key-name variants (deep / Deep Sleep / deep_sleep; stage_time / duration). Always emit the SleepStagesSummary object on SleepSummary responses (with null fields if the source doesn't track stages) so consumers can distinguish "source doesn't expose stages" from "feature not implemented".
+- replacement_kind:          decorate
+- what_we_changed:           Make Ultrahuman sleep-stage parsing robust to capitalization and key-name variants (deep / Deep Sleep / deep_sleep; stage_time / duration). Always emit the SleepStagesSummary object on SleepSummary responses (with null fields if the source doesn't track stages) so consumers can distinguish "source doesn't expose stages" from "feature not implemented". The summary-side change is now a decorator over upstream's get_sleep_summaries (ensure_stages_object), not a wholesale replacement — see apply.py.
 - retire_when:               get_sleep_summary response.data[*].stages is always an object (never null/missing) when sleep records exist, AND ultrahuman sleep stages parse correctly when upstream returns them with the canonical type tokens.
 - upstream_equivalent_check: stage_aliases
 - local_patch_file:          ow-patches/local/fix-sleep-stages-missing.py
@@ -116,7 +135,8 @@ This file has two halves:
 - upstream_issue_or_pr:      null
 - file:                      backend/app/models/user.py, backend/app/schemas/responses/activity/summaries.py, backend/app/services/summaries_service.py, backend/migrations/versions/2026_05_05_1200-9b3d4f7a8c21_user_timezone.py
 - symbol:                    User.timezone (column) + SleepSummary (timezone/start_time_local/end_time_local fields) + SummariesService.get_sleep_summaries (population)
-- what_we_changed:           Added User.timezone (IANA, VARCHAR(50)) DB column + migration; added timezone, start_time_local, end_time_local fields to SleepSummary; populated them in get_sleep_summaries from the user's timezone. The DB column and migration are structural and not toggleable from apply.py — only the response population is. With the patch disabled, the columns/fields exist but contain None.
+- replacement_kind:          decorate
+- what_we_changed:           Added User.timezone (IANA, VARCHAR(50)) DB column + migration; added timezone, start_time_local, end_time_local fields to SleepSummary; populated them in get_sleep_summaries from the user's timezone. The DB column and migration are structural and not toggleable from apply.py — only the response population is. The population is now a decorator over upstream's get_sleep_summaries (apply_timezone_fields), not a wholesale replacement — see apply.py. With the patch disabled, the columns/fields exist but contain None.
 - retire_when:               UserRead response includes a timezone field AND sleep summaries surface a per-record local datetime or a top-level user.timezone the consumer can apply.
 - upstream_equivalent_check: start_time_local
 - local_patch_file:          ow-patches/local/fix-sleep-timezone.py
@@ -231,6 +251,7 @@ upstream/main -- <files>`. There's no flag to flip.
 
 - patch_id:           frontend-display-timezone
 - status:             local_only
+- replacement_kind:   structural
 - upstream_url:       https://github.com/the-momentum/open-wearables
 - files:
   - frontend/package.json (added `date-fns-tz`)

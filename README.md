@@ -209,7 +209,8 @@ without restoring code from git history.
 ow-patches/
 ├── PATCHES.md           # registry — one entry per patch, explains intent + retire condition
 ├── apply.py             # imports each patch and monkey-patches at import time
-├── check_upstream.py    # `python ow-patches/check_upstream.py` — compares upstream/main against our markers
+├── check_upstream.py    # `python ow-patches/check_upstream.py` — equivalence + drift checks
+├── .upstream-baseline   # upstream/main SHA we last reconciled against (drift origin)
 └── local/<patch_id>.py  # patched implementation, one file per patch_id
 ```
 
@@ -217,7 +218,7 @@ ow-patches/
 so every entry point (FastAPI app, Celery worker, migrations, pytest) ends up with
 the same patches applied.
 
-**Check whether upstream has caught up:**
+**Check whether upstream has caught up — or silently diverged:**
 
 ```bash
 # one-time setup if not already configured
@@ -226,9 +227,49 @@ git remote add upstream https://github.com/the-momentum/open-wearables.git
 python ow-patches/check_upstream.py
 ```
 
-The script fetches `upstream/main`, greps for each patch's `upstream_equivalent_check`
-marker (path-qualified with `path::pattern` for narrow matches), and prints a summary
-table flagging candidates for retirement. Nothing is auto-retired.
+The script fetches `upstream/main` and runs **two independent checks** per patch:
+
+1. **Equivalence (heuristic).** Greps `upstream/main` for the patch's
+   `upstream_equivalent_check` marker (path-qualified with `path::pattern`). A hit
+   *suggests* upstream shipped its own version. This is a weak signal — the marker
+   is a string unique to *our* code, so it only fires when upstream happens to use
+   the same token, and is blind to an upstream change that does the same thing
+   differently.
+
+2. **Drift (deterministic).** For every file a patch depends on (its `file:` field),
+   runs `git log <baseline>..upstream/main -- <file>` to see whether upstream has
+   *touched* it since we last reconciled (`.upstream-baseline`). This is the check
+   that catches the dangerous blind spot the equivalence grep misses:
+
+   > A monkey-patch that **wholesale-replaces** an upstream method produces **no git
+   > merge conflict** (we never edit the upstream source file), so `git merge` is
+   > silent. If upstream rewrites that method, our patch keeps shadowing it with a
+   > stale copy — silently dropping upstream's improvements. This is exactly how
+   > `avg_hrv_rmssd_ms` went null after upstream rewrote `get_sleep_summaries`.
+
+   Drift is escalated by each patch's `replacement_kind` (see PATCHES.md): drift on
+   a `wholesale-replace` patch is a **SHADOW RISK** (re-verify/rebase — the script
+   exits non-zero); drift on a `decorate` patch is lower-risk (re-verify only). The
+   drift check focuses on monkey-patch patches — `structural` source-edit patches
+   surface upstream drift as ordinary git conflicts at merge time. The check is
+   file-granular: it flags broadly, then you diff upstream's change against the patch
+   to confirm whether your *specific* replaced symbol actually moved.
+
+Nothing is auto-retired or auto-rebased — all changes are manual.
+
+**Reconcile-and-merge workflow:**
+
+```bash
+python ow-patches/check_upstream.py          # 1. see what upstream touched since baseline
+git merge upstream/main                       # 2. merge (resolve dep/lock conflicts, unify alembic heads)
+# 3. for every SHADOW RISK / re-verify row: diff upstream's new body vs the patch,
+#    then rebase the patch (decorate > wholesale-replace where possible) or retire it
+cd backend && uv run pytest -q                # 4. full suite green with patches applied
+python ow-patches/check_upstream.py --update-baseline   # 5. record the new reconciled SHA
+```
+
+Skipping step 5 is safe (the baseline just stays older and the next run re-flags the
+same drift); never run it *before* steps 3–4, or you erase the signal.
 
 **Disable a single patch (A/B test):**
 

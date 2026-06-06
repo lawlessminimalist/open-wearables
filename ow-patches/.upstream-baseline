@@ -1,0 +1,8 @@
+# The upstream/main commit we last fully reconciled the patches against.
+# check_upstream.py compares this against the current upstream/main to detect
+# whether upstream has TOUCHED any file a patch depends on (drift). After you
+# merge upstream and re-verify every flagged patch, refresh this with:
+#
+#     python ow-patches/check_upstream.py --update-baseline
+#
+06a6435a852c5105dbffc42862e1556884e99685
