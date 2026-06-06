@@ -30,6 +30,13 @@ services:
     environment:
       - DB_HOST=db
       - REDIS_HOST=redis
+      - OW_PATCHES_DIR=/root_project/ow-patches
+    volumes:
+      # Fork-only patch system — see ow-patches/PATCHES.md. ow-patches lives at
+      # the repo root (outside the ./backend build context) so it is NOT baked
+      # into the image; it must be bind-mounted or every fork patch silently
+      # no-ops (e.g. timezone bucketing falls back to upstream UTC).
+      - ./ow-patches:/root_project/ow-patches:ro
     ports:
       - "${API_PORT:-8000}:8000"
     depends_on:
@@ -49,6 +56,9 @@ services:
     environment:
       - DB_HOST=db
       - REDIS_HOST=redis
+      - OW_PATCHES_DIR=/root_project/ow-patches
+    volumes:
+      - ./ow-patches:/root_project/ow-patches:ro
     depends_on:
       - redis
       - db
@@ -65,6 +75,9 @@ services:
     environment:
       - DB_HOST=db
       - REDIS_HOST=redis
+      - OW_PATCHES_DIR=/root_project/ow-patches
+    volumes:
+      - ./ow-patches:/root_project/ow-patches:ro
     depends_on:
       - redis
       - db
