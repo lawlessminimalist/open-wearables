@@ -27,19 +27,22 @@ logger = logging.getLogger(__name__)
 # to revert that patch to upstream behavior.
 # ---------------------------------------------------------------------------
 PATCHES_ENABLED: dict[str, bool] = {
-    "fix-hrv-source-unknown":                  True,
-    "fix-hrv-nightly-aggregate":               True,
-    "fix-pace-null":                           True,
-    "fix-calories-total-mislabelled":          True,
-    "fix-spo2-respiratory-missing":            True,
-    "fix-sleep-stages-missing":                True,
-    "fix-sleep-timezone":                      True,
-    "fix-active-minutes-broken":               True,
-    "fix-activity-summary-utc-bucketing":      True,
-    "fix-garmin-connect-activity-hr-samples":  True,
-    "fix-summary-timezone-echo":               True,
-    "fix-sleep-summary-utc-bucketing":         True,
-    "fix-health-score-source-priority":        True,
+    "fix-hrv-source-unknown": True,
+    # Retired: upstream commit 09b7b0a now populates avg_hrv_sdnn_ms /
+    # avg_hrv_rmssd_ms / avg_respiratory_rate / avg_spo2_percent in
+    # get_sleep_summaries itself. See PATCHES.md.
+    "fix-hrv-nightly-aggregate": False,
+    "fix-pace-null": True,
+    "fix-calories-total-mislabelled": True,
+    "fix-spo2-respiratory-missing": True,
+    "fix-sleep-stages-missing": True,
+    "fix-sleep-timezone": True,
+    "fix-active-minutes-broken": True,
+    "fix-activity-summary-utc-bucketing": True,
+    "fix-garmin-connect-activity-hr-samples": True,
+    "fix-summary-timezone-echo": True,
+    "fix-sleep-summary-utc-bucketing": True,
+    "fix-health-score-source-priority": True,
 }
 
 
@@ -76,75 +79,40 @@ def _patch(patch_id: str):
 # Composer — for patches that share a target function.
 # ---------------------------------------------------------------------------
 #
-# Two functions are patched by more than one logical fix:
+# Two functions are decorated/replaced by more than one logical fix:
 #
-#   SummariesService.get_sleep_summaries     <- fix-hrv-nightly-aggregate
-#                                               + fix-sleep-stages-missing (always-emit stages)
+#   SummariesService.get_sleep_summaries     <- fix-sleep-stages-missing (always-emit stages)
 #                                               + fix-sleep-timezone (timezone fields)
 #
 #   SummariesService.get_activity_summaries  <- fix-calories-total-mislabelled
 #                                               + fix-active-minutes-broken
 #
-# The replacements live in fix-hrv-nightly-aggregate.py and
-# fix-calories-total-mislabelled.py respectively. compose() figures out which
-# coverage we need given PATCHES_ENABLED, installs the right replacement, and
-# wires per-patch toggles (e.g. SUPPRESS_TIMEZONE) onto the patch modules.
+# get_sleep_summaries is now OWNED by upstream (commit 09b7b0a populates the
+# HRV/RR/SpO2 metrics that fix-hrv-nightly-aggregate used to add — that patch is
+# retired). The two remaining sleep patches are pure decorators: the composer
+# wraps upstream's method and post-processes each summary in the response. The
+# get_activity_summaries replacement still lives in
+# fix-calories-total-mislabelled.py.
 # ---------------------------------------------------------------------------
 
 
 def _compose_sleep_summaries() -> None:
-    """Install the get_sleep_summaries replacement that covers whichever of
-    {hrv-nightly, sleep-stages-missing, sleep-timezone} are enabled.
+    """Wrap upstream's get_sleep_summaries with whichever of
+    {sleep-stages-missing, sleep-timezone} are enabled.
+
+    Both are pure decorators over upstream's response — they add fields, they
+    don't reimplement the method. This means they automatically inherit any
+    upstream changes to get_sleep_summaries (e.g. the avg_hrv_rmssd_ms field
+    added in 09b7b0a) instead of shadowing them.
     """
-    enabled_hrv = PATCHES_ENABLED.get("fix-hrv-nightly-aggregate", False)
     enabled_stages = PATCHES_ENABLED.get("fix-sleep-stages-missing", False)
     enabled_tz = PATCHES_ENABLED.get("fix-sleep-timezone", False)
 
-    if not (enabled_hrv or enabled_stages or enabled_tz):
+    if not (enabled_stages or enabled_tz):
         return  # all upstream — no override
 
-    # The shared replacement lives in fix-hrv-nightly-aggregate.py. It always
-    # populates HRV/RR/SpO2 averages and always emits the SleepStagesSummary
-    # object. We toggle off:
-    #   - HRV/RR/SpO2 averages    when fix-hrv-nightly-aggregate is False
-    #   - timezone/local fields   when fix-sleep-timezone is False
-    #   - the always-emit stages  when fix-sleep-stages-missing is False
-    # by wrapping the installed function with selective field stripping.
-    hrv_module = _patch("fix-hrv-nightly-aggregate")
-    tz_module = _patch("fix-sleep-timezone")
-
-    base_impl = hrv_module.get_sleep_summaries
-
-    # Set the timezone-suppression flag on the timezone patch module so the
-    # base implementation can read it via tz_module.SUPPRESS_TIMEZONE.
-    tz_module.SUPPRESS_TIMEZONE = not enabled_tz
-
-    def composed(self, db_session, user_id, start_date, end_date, cursor, limit):
-        response = base_impl(self, db_session, user_id, start_date, end_date, cursor, limit)
-        if not (enabled_hrv and enabled_tz and enabled_stages):
-            for summary in response.data:
-                if not enabled_hrv:
-                    summary.avg_hrv_sdnn_ms = None
-                    summary.avg_respiratory_rate = None
-                    summary.avg_spo2_percent = None
-                if not enabled_tz or tz_module.SUPPRESS_TIMEZONE:
-                    summary.timezone = None
-                    summary.start_time_local = None
-                    summary.end_time_local = None
-                if not enabled_stages and summary.stages is not None:
-                    has_data = any(
-                        v is not None
-                        for v in (
-                            summary.stages.deep_minutes,
-                            summary.stages.light_minutes,
-                            summary.stages.rem_minutes,
-                            summary.stages.awake_minutes,
-                        )
-                    )
-                    if not has_data:
-                        # Upstream returns None when no stage data — emulate.
-                        summary.stages = None
-        return response
+    stages_module = _patch("fix-sleep-stages-missing") if enabled_stages else None
+    tz_module = _patch("fix-sleep-timezone") if enabled_tz else None
 
     # NOTE: we deliberately fetch through sys.modules. `app.services` re-exports
     # the `summaries_service` singleton with `from .summaries_service import …`,
@@ -153,9 +121,24 @@ def _compose_sleep_summaries() -> None:
     import app.services.summaries_service  # noqa: F401, PLC0415  (ensures the module is registered in sys.modules)
 
     _module = sys.modules["app.services.summaries_service"]
+    upstream_impl = _module.SummariesService.get_sleep_summaries
+
+    def composed(self, db_session, user_id, start_date, end_date, cursor, limit):
+        response = upstream_impl(
+            self, db_session, user_id, start_date, end_date, cursor, limit
+        )
+        user_tz = None
+        if enabled_tz:
+            user = self.user_repo.get(db_session, user_id)
+            user_tz = getattr(user, "timezone", None) if user else None
+        for summary in response.data:
+            if enabled_stages:
+                stages_module.ensure_stages_object(summary)
+            if enabled_tz:
+                tz_module.apply_timezone_fields(summary, user_tz)
+        return response
+
     _module.SummariesService.get_sleep_summaries = composed
-    _module.SLEEP_PHYSIO_SERIES_TYPES = hrv_module.SLEEP_PHYSIO_SERIES_TYPES
-    _module.SLEEP_PHYSIO_WINDOW_PAD = hrv_module.SLEEP_PHYSIO_WINDOW_PAD
 
 
 def _compose_activity_summaries() -> None:
@@ -173,8 +156,12 @@ def _compose_activity_summaries() -> None:
 
     enabled_tz_echo = PATCHES_ENABLED.get("fix-summary-timezone-echo", False)
 
-    def composed(self, db_session, user_id, start_date, end_date, cursor, limit, sort_order="asc"):
-        response = base_impl(self, db_session, user_id, start_date, end_date, cursor, limit, sort_order)
+    def composed(
+        self, db_session, user_id, start_date, end_date, cursor, limit, sort_order="asc"
+    ):
+        response = base_impl(
+            self, db_session, user_id, start_date, end_date, cursor, limit, sort_order
+        )
         if not enabled_cal:
             # Revert to upstream behavior: total = active + (basal or 0); basal_calories not surfaced.
             for s in response.data:
@@ -231,8 +218,9 @@ _STANDALONE_PATCHES = (
 # Patches whose runtime behavior is composed (no direct install call) live in
 # the composers above, but their files still need to be loadable so check_upstream
 # and the composer can read flags off them.
+# (fix-hrv-nightly-aggregate is retired — its file is kept for reference but is
+# no longer loaded or composed.)
 _COMPOSED_PATCHES = (
-    "fix-hrv-nightly-aggregate",
     "fix-calories-total-mislabelled",
     "fix-sleep-stages-missing",
     "fix-sleep-timezone",
@@ -286,7 +274,9 @@ def apply_patches() -> dict[str, bool]:
         try:
             _patch(patch_id)
         except FileNotFoundError:
-            logger.warning("ow-patches: composed patch %s has no file (skipping load)", patch_id)
+            logger.warning(
+                "ow-patches: composed patch %s has no file (skipping load)", patch_id
+            )
 
     _APPLIED = True
     return dict(PATCHES_ENABLED)

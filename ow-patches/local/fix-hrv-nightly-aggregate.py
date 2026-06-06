@@ -1,7 +1,15 @@
 # patch_id:        fix-hrv-nightly-aggregate
+# status:          RETIRED (upstream commit 09b7b0a, merged 2026-06-07)
 # upstream_file:   backend/app/services/summaries_service.py
 # upstream_symbol: SummariesService.get_sleep_summaries
 # retire_when:     get_sleep_summaries response includes avg_hrv_sdnn_ms as a non-null float when intraday SDNN samples exist within the sleep window.
+#
+# RETIRED — kept for institutional memory only. Disabled in apply.py
+# (PATCHES_ENABLED["fix-hrv-nightly-aggregate"] = False) and no longer loaded or
+# composed. Upstream now populates avg_hrv_sdnn_ms / avg_hrv_rmssd_ms /
+# avg_respiratory_rate / avg_spo2_percent in get_sleep_summaries itself. The
+# install() below is dead code; do not re-enable without first confirming
+# upstream no longer owns these fields.
 
 """Populate avg_hrv_sdnn_ms / avg_respiratory_rate / avg_spo2_percent on the
 SleepSummary response by averaging the relevant SeriesType samples over each

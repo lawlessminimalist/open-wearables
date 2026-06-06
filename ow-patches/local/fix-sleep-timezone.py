@@ -9,11 +9,13 @@ This patch is split between toggleable runtime behavior and structural
 ("not toggleable from apply.py") changes.
 
 Toggleable (this file):
-  - Population of timezone, start_time_local, end_time_local on SleepSummary
-    happens inside SummariesService.get_sleep_summaries, which is replaced by
-    fix-hrv-nightly-aggregate. apply.py composes them so disabling
-    fix-sleep-timezone alone keeps the other patch's behavior but suppresses
-    timezone population (see compose() in apply.py).
+  - Population of timezone, start_time_local, end_time_local on SleepSummary.
+    Since upstream (commit 09b7b0a) now owns the body of
+    SummariesService.get_sleep_summaries (it populates the HRV/RR/SpO2 metrics
+    that fix-hrv-nightly-aggregate used to add), this patch no longer replaces
+    that method. Instead apply.py wraps upstream's method and calls
+    apply_timezone_fields() on each summary in the response — see
+    _compose_sleep_summaries() in apply.py.
 
 Structural (left in source files):
   - User.timezone column (backend/app/models/user.py)
@@ -25,32 +27,36 @@ Disabling this patch via PATCHES_ENABLED leaves the columns/fields defined
 but causes their values to come back as None in API responses.
 """
 
+from datetime import datetime
 
-def get_sleep_summaries_without_timezone(self, *args, **kwargs):  # noqa: ANN001, ANN201
-    """Replacement that runs the (already-patched) sleep summaries function with
-    the user's timezone forcibly hidden — used when only fix-sleep-timezone is
-    disabled but fix-hrv-nightly-aggregate is enabled.
+from app.schemas.responses.activity import SleepSummary
 
-    Implemented by calling the composed implementation with a context flag.
-    apply.py wires this in only when needed.
+
+def _to_local(dt: datetime | None, tz_name: str | None) -> datetime | None:
+    """Render a UTC datetime in the given IANA timezone, or None on bad input."""
+    if dt is None or not tz_name:
+        return None
+    try:
+        from zoneinfo import ZoneInfo  # noqa: PLC0415
+
+        return dt.astimezone(ZoneInfo(tz_name))
+    except Exception:
+        return None
+
+
+def apply_timezone_fields(summary: SleepSummary, user_tz: str | None) -> None:
+    """Decorate one SleepSummary with the user's timezone + local datetimes.
+
+    Operates in place on the summary returned by upstream's get_sleep_summaries.
     """
-    raise NotImplementedError(
-        "fix-sleep-timezone is composed into fix-hrv-nightly-aggregate's "
-        "get_sleep_summaries. Disabling timezone alone is handled by apply.py "
-        "via the _SUPPRESS_TIMEZONE module flag — no override required here."
-    )
-
-
-# Sentinel checked by the composed get_sleep_summaries (in
-# fix-hrv-nightly-aggregate.py + apply.py composer). When True, the patched
-# function returns None for timezone/start_time_local/end_time_local even when
-# the user has a timezone set.
-SUPPRESS_TIMEZONE = False
+    summary.timezone = user_tz
+    summary.start_time_local = _to_local(summary.start_time, user_tz)
+    summary.end_time_local = _to_local(summary.end_time, user_tz)
 
 
 def install() -> None:
-    """No direct monkey-patch — the timezone-population logic lives inside the
-    sleep-summaries replacement installed by fix-hrv-nightly-aggregate. apply.py
-    handles the on/off toggle by mutating SUPPRESS_TIMEZONE on this module.
+    """No direct monkey-patch — apply.py's _compose_sleep_summaries() wraps
+    upstream's get_sleep_summaries and calls apply_timezone_fields() when this
+    patch is enabled.
     """
     return

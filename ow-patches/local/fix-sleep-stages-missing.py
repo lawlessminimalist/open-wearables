@@ -15,13 +15,16 @@ Two coordinated changes:
      so consumers can distinguish "source doesn't track stages" from
      "feature not implemented in this fork".
 
-The (2) change is shared with fix-hrv-nightly-aggregate (same function).
-apply.py installs them in dependency order — see compose() in apply.py.
+Since upstream (commit 09b7b0a) now owns the body of get_sleep_summaries,
+the (2) change is delivered by apply.py wrapping upstream's method and calling
+ensure_stages_object() on each summary — see _compose_sleep_summaries().
 """
 
 from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID, uuid4
+
+from app.schemas.responses.activity import SleepStagesSummary, SleepSummary
 
 # Stage aliases — accept any reasonable spelling.
 _STAGE_ALIASES: dict[str, str] = {
@@ -49,7 +52,9 @@ def normalize_sleep(self, raw_sleep: dict[str, Any], user_id: UUID) -> dict[str,
     if bedtime_end_ts:
         end_dt = datetime.fromtimestamp(bedtime_end_ts, tz=timezone.utc)
 
-    quick_metrics = {m.get("type"): m.get("value", 0) for m in raw_sleep.get("quick_metrics", [])}
+    quick_metrics = {
+        m.get("type"): m.get("value", 0) for m in raw_sleep.get("quick_metrics", [])
+    }
     time_in_bed_seconds = quick_metrics.get("time_in_bed", 0) or 0
 
     # Robust stage parsing — accept deep / deep_sleep / Deep Sleep equivalently,
@@ -100,10 +105,27 @@ def normalize_sleep(self, raw_sleep: dict[str, Any], user_id: UUID) -> dict[str,
     }
 
 
+def ensure_stages_object(summary: SleepSummary) -> None:
+    """Always emit a SleepStagesSummary object on the response.
+
+    Upstream returns stages=None when a sleep record has no stage data; we emit
+    an all-null SleepStagesSummary instead so consumers can distinguish "source
+    doesn't track stages" from "feature not implemented". Operates in place on
+    the summary returned by upstream's get_sleep_summaries.
+    """
+    if summary.stages is None:
+        summary.stages = SleepStagesSummary(
+            deep_minutes=None,
+            light_minutes=None,
+            rem_minutes=None,
+            awake_minutes=None,
+        )
+
+
 def install() -> None:
     """Patch the Ultrahuman normalizer. The summary-side change ('always emit stages')
-    is delivered by fix-hrv-nightly-aggregate's get_sleep_summaries replacement, since
-    they share the same function. apply.py orders the patches so that one is enough.
+    is delivered by apply.py's _compose_sleep_summaries() wrapping upstream's
+    get_sleep_summaries and calling ensure_stages_object().
     """
     from app.services.providers.ultrahuman.data_247 import Ultrahuman247Data
 
