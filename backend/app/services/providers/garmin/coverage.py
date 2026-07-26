@@ -20,6 +20,11 @@ ACTIVITY_SAMPLE_SERIES: list[tuple[str, SeriesType]] = [
 DAILIES_SERIES: list[tuple[str, SeriesType]] = [
     ("steps", SeriesType.steps),
     ("active_calories", SeriesType.energy),
+    # ow-patches fix-calories-total-mislabelled (structural): persist basal/BMR
+    # energy so ActivitySummary can report an honest active+basal total instead
+    # of active-only. The normalizer already emits "bmr_calories". Removing this
+    # line reverts to upstream behaviour (basal stays null).
+    ("bmr_calories", SeriesType.basal_energy),
     ("resting_heart_rate", SeriesType.resting_heart_rate),
     ("floors_climbed", SeriesType.flights_climbed),
     ("distance_meters", SeriesType.distance_walking_running),

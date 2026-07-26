@@ -90,7 +90,9 @@ def get_workouts(
 
     data = []
     for record, data_source in records:
-        details: WorkoutDetails | None = record.detail if isinstance(record.detail, WorkoutDetails) else None
+        # Upstream #1314 removed EventRecord.detail (polymorphic) in favour of a
+        # dedicated workout_detail relationship — mirror upstream's own access.
+        details: WorkoutDetails | None = record.workout_detail
 
         workout = Workout(
             id=record.id,

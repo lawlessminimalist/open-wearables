@@ -7,11 +7,17 @@ ACTIVITY_SAMPLE_SERIES: dict[str, SeriesType] = {
     "hrv": SeriesType.heart_rate_variability_sdnn,
     "temperature": SeriesType.body_temperature,
     "steps": SeriesType.steps,
+    # Fork patch fix-spo2-respiratory-missing: intraday SpO2 / respiratory-rate
+    # buckets (produced by normalize_activity_samples) resolve here so
+    # save_activity_samples persists them and the coverage tab advertises them
+    # via TIMESERIES below. See ow-patches/local/fix-spo2-respiratory-missing.py.
+    "spo2": SeriesType.oxygen_saturation,
+    "respiratory_rate": SeriesType.respiratory_rate,
 }
 
 TIMESERIES: frozenset[SeriesType] = frozenset(
     {
-        *ACTIVITY_SAMPLE_SERIES.values(),  # /user_data/metrics (hr, hrv, temp, steps)
+        *ACTIVITY_SAMPLE_SERIES.values(),  # /user_data/metrics (hr, hrv, temp, steps, spo2, respiratory_rate)
         SeriesType.vo2_max,  # /user_data/metrics (vo2_max)
         SeriesType.active_time,  # /user_data/metrics (active_minutes)
     }
