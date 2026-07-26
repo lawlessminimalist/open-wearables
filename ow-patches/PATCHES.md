@@ -221,13 +221,15 @@ diff; a missed shadow is how `avg_hrv_rmssd_ms` silently went null.
 ## fix-active-minutes-broken
 
 - patch_id:                  fix-active-minutes-broken
-- status:                    upstream_candidate
+- status:                    retired
+- retired_in:                upstream #1242 "active minutes as a new series type" (commit 76ffff4). Marked retired 2026-07-26 against upstream/main; NOT YET MERGED into this fork (baseline 06a6435). Behavioral retirement lands with the upstream merge — see retirement_note.
 - upstream_url:              https://github.com/the-momentum/open-wearables
 - upstream_issue_or_pr:      null
 - file:                      backend/app/services/summaries_service.py
 - symbol:                    SummariesService.get_activity_summaries
 - what_we_changed:           Derive ActivitySummary.active_minutes from intensity_minutes.{light,moderate,vigorous} (HR-based, intraday) when present, instead of the per-minute step bucket which collapses to ~1 for providers that store steps as a single daily total.
 - retire_when:               ActivitySummary.active_minutes equals intensity_minutes.light + moderate + vigorous when HR-based intensity is available, OR upstream uses a different active-minutes signal that doesn't collapse to 1 for daily-total step providers.
+- retirement_note:           Superseded by upstream #1242 (76ffff4): SeriesType.active_time ("Provider-reported daily active time", minutes) is persisted for Garmin/Oura/Polar/Ultrahuman, aggregated as active_time_minutes, and get_activity_summaries now prefers it over the step heuristic; independently the repo excludes daily-total step rows from the per-minute bucket (data_point_series_repository.py `is_daily_total.isnot(True)`, ~L668) so the fallback returns null instead of collapsing to 1 — satisfying the second retire_when clause. Keeping our override is strictly worse: our intensity-band derivation now SHADOWS upstream's more authoritative active_time signal (the composed get_activity_summaries never reads active_time_minutes). CAVEAT — retired ahead of the merge: the PATCHES_ENABLED flag is False, but active_minutes is currently still computed by the composed fix-calories-total-mislabelled base_impl (they share the wholesale get_activity_summaries replacement), so the flag flip is bookkeeping until (a) upstream/main is merged and (b) fix-calories-total-mislabelled is rebased to a decorator over upstream's get_activity_summaries. Run the pytest verification at that point, not now. garmin_connect (fork-only) does not emit SeriesType.active_time, so post-merge its active_minutes falls to the step path which now returns null (honest) rather than 1 — accepted regression.
 - upstream_equivalent_check: active_mins = light + moderate + vigorous
 - local_patch_file:          ow-patches/local/fix-active-minutes-broken.py
 

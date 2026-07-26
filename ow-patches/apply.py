@@ -37,7 +37,14 @@ PATCHES_ENABLED: dict[str, bool] = {
     "fix-spo2-respiratory-missing": True,
     "fix-sleep-stages-missing": True,
     "fix-sleep-timezone": True,
-    "fix-active-minutes-broken": True,
+    # Retired: upstream #1242 (76ffff4) adds SeriesType.active_time →
+    # active_time_minutes, preferred over the step heuristic in
+    # get_activity_summaries, and the repo now excludes is_daily_total rows from
+    # the per-minute bucket so it no longer collapses to 1. See PATCHES.md.
+    # NOTE: active_minutes is still computed by the composed
+    # fix-calories-total-mislabelled base_impl until that patch is rebased to a
+    # decorator at merge time — this flag flip is bookkeeping ahead of the merge.
+    "fix-active-minutes-broken": False,
     "fix-activity-summary-utc-bucketing": True,
     "fix-garmin-connect-activity-hr-samples": True,
     "fix-summary-timezone-echo": True,
