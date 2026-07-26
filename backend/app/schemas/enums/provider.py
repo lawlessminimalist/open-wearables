@@ -6,9 +6,9 @@ class ProviderName(str, Enum):
 
     APPLE = "apple"
     SAMSUNG = "samsung"
-    GOOGLE = "google"
     GARMIN = "garmin"
     GARMIN_CONNECT = "garmin_connect"
+    GOOGLE = "google"
     POLAR = "polar"
     SUUNTO = "suunto"
     WHOOP = "whoop"
@@ -16,6 +16,7 @@ class ProviderName(str, Enum):
     OURA = "oura"
     FITBIT = "fitbit"
     ULTRAHUMAN = "ultrahuman"
+    SENSORBIO = "sensorbio"
     UNKNOWN = "unknown"
     INTERNAL = "internal"
 
