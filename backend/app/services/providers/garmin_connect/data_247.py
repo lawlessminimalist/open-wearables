@@ -48,8 +48,14 @@ class GarminConnect247Data(Base247DataTemplate):
         api_base_url: str,
         client: GarminConnectClient,
     ) -> None:
-        # oauth=None because garmin_connect bypasses OAuth entirely
-        super().__init__(provider_name=provider_name, api_base_url=api_base_url, oauth=None)  # type: ignore[arg-type]
+        # oauth=None because garmin_connect bypasses OAuth entirely (credential-based
+        # provider). The template's signature requires BaseOAuthTemplate, hence the
+        # ignore — ty doesn't honour the mypy-style `type: ignore[arg-type]`.
+        super().__init__(
+            provider_name=provider_name,
+            api_base_url=api_base_url,
+            oauth=None,  # ty: ignore[invalid-argument-type]
+        )
         self.client = client
         self.event_record_repo = EventRecordRepository(EventRecord)
         self.connection_repo = UserConnectionRepository()

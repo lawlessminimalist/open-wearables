@@ -115,7 +115,7 @@ export interface SleepStats {
  */
 export function calculateSleepStats(
   summaries: SleepSummary[],
-  tz: string = DEFAULT_DISPLAY_TZ,
+  tz: string = DEFAULT_DISPLAY_TZ
 ): SleepStats | null {
   if (summaries.length === 0) {
     return null;

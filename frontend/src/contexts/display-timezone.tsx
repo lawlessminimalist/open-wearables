@@ -41,7 +41,8 @@ interface DisplayTimezoneContextValue {
   resetDisplayTz: () => void;
 }
 
-const DisplayTimezoneContext = createContext<DisplayTimezoneContextValue | null>(null);
+const DisplayTimezoneContext =
+  createContext<DisplayTimezoneContextValue | null>(null);
 
 const STORAGE_PREFIX = 'ow:display-tz:';
 
@@ -65,8 +66,13 @@ interface DisplayTimezoneProviderProps {
   userId?: string | null;
 }
 
-export function DisplayTimezoneProvider({ children, userId }: DisplayTimezoneProviderProps) {
-  const [displayTz, setDisplayTzState] = useState<string>(() => readStoredTz(userId));
+export function DisplayTimezoneProvider({
+  children,
+  userId,
+}: DisplayTimezoneProviderProps) {
+  const [displayTz, setDisplayTzState] = useState<string>(() =>
+    readStoredTz(userId)
+  );
 
   // If the userId changes (navigated to a different user), reload the
   // preference for the new scope.
@@ -84,7 +90,7 @@ export function DisplayTimezoneProvider({ children, userId }: DisplayTimezonePro
         // localStorage write can fail in privacy modes — ignore.
       }
     },
-    [userId],
+    [userId]
   );
 
   const resetDisplayTz = useCallback(() => {
@@ -98,11 +104,13 @@ export function DisplayTimezoneProvider({ children, userId }: DisplayTimezonePro
 
   const value = useMemo<DisplayTimezoneContextValue>(
     () => ({ displayTz, setDisplayTz, resetDisplayTz }),
-    [displayTz, setDisplayTz, resetDisplayTz],
+    [displayTz, setDisplayTz, resetDisplayTz]
   );
 
   return (
-    <DisplayTimezoneContext.Provider value={value}>{children}</DisplayTimezoneContext.Provider>
+    <DisplayTimezoneContext.Provider value={value}>
+      {children}
+    </DisplayTimezoneContext.Provider>
   );
 }
 

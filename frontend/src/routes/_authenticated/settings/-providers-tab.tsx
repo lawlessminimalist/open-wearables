@@ -104,9 +104,12 @@ export function ProvidersTab() {
       {oauthProviders.length > 0 && (
         <div className="rounded-2xl border border-border/60 bg-gradient-to-br from-card/80 to-card/40 backdrop-blur-xl overflow-hidden">
           <div className="px-6 py-4 border-b border-border/60">
-            <h3 className="text-sm font-medium text-foreground">OAuth Providers</h3>
+            <h3 className="text-sm font-medium text-foreground">
+              OAuth Providers
+            </h3>
             <p className="text-xs text-muted-foreground mt-1">
-              Providers that connect via OAuth — users authorise in their browser
+              Providers that connect via OAuth — users authorise in their
+              browser
             </p>
           </div>
           <div className="divide-y divide-border/40">

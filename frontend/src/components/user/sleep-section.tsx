@@ -193,7 +193,7 @@ function SleepSessionRow({
   // Prepare HR chart data using utility function
   const hrChartData = useMemo(
     () => prepareHrChartData(hrData?.data, displayTz),
-    [hrData, displayTz],
+    [hrData, displayTz]
   );
 
   // Get detail fields using utility function
