@@ -352,3 +352,90 @@ class TestCooldownEscalation:
         assert seen[1] == patch_module._BASE_COOLDOWN_SECONDS * 2
         assert seen == sorted(seen), "cooldown must be non-decreasing"
         assert max(seen) <= patch_module._MAX_COOLDOWN_SECONDS
+
+
+class TestAccountLockedAndAuthAbort:
+    """Regression cover for the 2026-08-20 account lock.
+
+    Weeks of hammering escalated 429 -> IP block -> ACCOUNT_LOCKED. After the
+    lock, Garmin returns a misleading "401 Unauthorized (Invalid Username or
+    Password)", which the classifier correctly reads as an AUTH failure, not a
+    rate limit — and the original fix only aborted on rate limits, so the per-day
+    loop kept re-attempting login and kept the lock alive.
+    """
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "{'type': 'ACCOUNT_LOCKED', 'message': 'generalLoginAccountLocked'}",
+            "Mobile login failed: ACCOUNT_LOCKED",
+            "generalloginaccountlocked",
+        ],
+    )
+    def test_account_lock_detected(self, patch_module: Any, message: str) -> None:
+        assert patch_module._is_account_locked(message) is True
+
+    def test_ordinary_bad_password_is_not_a_lock(self, patch_module: Any) -> None:
+        assert patch_module._is_account_locked("401 Unauthorized (Invalid Username or Password)") is False
+
+    def test_lock_sets_cooldown_and_names_the_remedy(self, patch_module: Any, no_redis: None) -> None:
+        client = GarminConnectClient()
+
+        class FakeApi:
+            def login(self) -> None:
+                raise RuntimeError("Mobile login failed: {'type': 'ACCOUNT_LOCKED'}")
+
+        with pytest.raises(GarminConnectClientError) as exc_info:
+            client._login(FakeApi())
+
+        assert "LOCKED" in str(exc_info.value)
+        assert "password reset" in str(exc_info.value)
+        assert client._blocked_for() > 0, "a locked account must cool down like a rate limit"
+
+    def test_auth_failure_aborts_the_run_after_one_attempt(self, patch_module: Any, no_redis: None) -> None:
+        """This is the bug the account lock exposed: 401 was swallowed per-day."""
+        counters = {"calls": 0}
+
+        class FakeClient:
+            def iter_dates(self, start: Any, end: Any) -> list[Any]:
+                from datetime import timedelta
+
+                out, cur = [], start
+                while cur <= end:
+                    out.append(cur)
+                    cur += timedelta(days=1)
+                return out
+
+        handler = GarminConnect247Data(
+            provider_name="garmin_connect",
+            api_base_url="https://connect.garmin.com",
+            client=FakeClient(),
+        )
+
+        def bad_creds(_db: Any, _uid: Any, _d: Any) -> int:
+            counters["calls"] += 1
+            raise GarminConnectClientError(
+                "Garmin Connect authentication failed: 401 Unauthorized (Invalid Username or Password)"
+            )
+
+        for name in (
+            "save_sleep_for_date",
+            "save_heart_rate_for_date",
+            "save_daily_stats_for_date",
+            "save_stress_for_date",
+            "save_hrv_for_date",
+        ):
+            setattr(handler, name, bad_creds)
+        handler.save_body_composition = lambda *_a, **_k: 0  # type: ignore[method-assign]
+
+        with pytest.raises(GarminConnectClientError):
+            handler.load_and_save_all(
+                db=SimpleNamespace(),  # type: ignore[arg-type]
+                user_id=uuid4(),
+                start_time=datetime(2026, 7, 20, tzinfo=timezone.utc),
+                end_time=datetime(2026, 8, 20, tzinfo=timezone.utc),
+            )
+
+        assert counters["calls"] == 1, (
+            f"a credential failure must abort the run, not retry per (date, type); made {counters['calls']} calls"
+        )
