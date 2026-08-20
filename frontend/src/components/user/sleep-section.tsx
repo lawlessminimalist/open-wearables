@@ -1,7 +1,5 @@
 import { useMemo, useState } from 'react';
 import { format } from 'date-fns';
-import { useDisplayTimezone } from '@/contexts/display-timezone';
-import { formatInTz } from '@/lib/dates';
 import {
   Bar,
   BarChart,
@@ -31,7 +29,7 @@ import { useDateRange, useAllTimeRange } from '@/hooks/use-date-range';
 import type { DateRangeValue } from '@/components/ui/date-range-selector';
 import { CursorPagination } from '@/components/common/cursor-pagination';
 import { MetricCard } from '@/components/common/metric-card';
-import { SourceBadge } from '@/components/common/source-badge';
+import { DataSourceInfo } from '@/components/common/data-source-info';
 import { SectionHeader } from '@/components/common/section-header';
 import { Switch } from '@/components/ui/switch';
 import {
@@ -61,6 +59,8 @@ import {
   type SleepStageKey,
 } from '@/lib/utils/sleep';
 import { prepareHrChartData } from '@/lib/utils/timeseries';
+import { useDisplayTimezone } from '@/contexts/display-timezone';
+import { formatInTz } from '@/lib/dates';
 import { HR_CHART_CONFIG } from '@/lib/utils/chart-config';
 import type {
   SleepSession,
@@ -100,8 +100,8 @@ const SLEEP_METRICS: SleepMetricDefinition[] = [
     label: 'Avg Efficiency',
     shortLabel: 'Efficiency',
     icon: Zap,
-    color: 'text-[hsl(var(--success-muted))]',
-    bgColor: 'bg-[hsl(var(--success-muted)/0.1)]',
+    color: 'text-success-muted',
+    bgColor: 'bg-success-muted/10',
     glowColor: 'shadow-[0_0_15px_rgba(16,185,129,0.5)]',
     getValue: (stats) => stats.avgEfficiency,
     formatValue: (v) => (v !== null ? `${Math.round(v)}%` : '-'),
@@ -179,7 +179,6 @@ function SleepSessionRow({
   const [isExpanded, setIsExpanded] = useState(false);
   const [showDelete, setShowDelete] = useState(false);
   const deleteSleep = useDeleteSleepSession(userId);
-  const { displayTz } = useDisplayTimezone();
 
   // Fetch heart rate time series data when expanded
   const { data: hrData, isLoading: hrLoading } = useTimeSeries(userId, {
@@ -191,6 +190,8 @@ function SleepSessionRow({
   });
 
   // Prepare HR chart data using utility function
+  const { displayTz } = useDisplayTimezone();
+
   const hrChartData = useMemo(
     () => prepareHrChartData(hrData?.data, displayTz),
     [hrData, displayTz]
@@ -210,124 +211,123 @@ function SleepSessionRow({
       {/* Main row - always visible */}
       <button
         onClick={() => hasDetails && setIsExpanded(!isExpanded)}
-        className="w-full px-4 py-3 flex items-center text-left"
+        className="w-full px-4 py-3 flex flex-col gap-1.5 text-left"
         disabled={!hasDetails}
       >
-        {/* Date */}
-        <div className="w-28 flex-shrink-0">
-          <div className="flex items-center gap-1">
+        <div className="w-full flex items-center">
+          {/* Date */}
+          <div className="w-28 flex-shrink-0">
             {session.is_nap && (
-              <span className="text-[10px] font-medium px-1.5 py-0.5 bg-[hsl(var(--warning-muted)/0.15)] text-[hsl(var(--warning-muted))] rounded">
+              <span className="text-[10px] font-medium px-1.5 py-0.5 bg-warning-muted/15 text-warning-muted rounded">
                 NAP
               </span>
             )}
-            {session.source?.provider && (
-              <SourceBadge provider={session.source.provider} />
-            )}
-          </div>
-          <div className="flex items-center gap-2">
-            <p className="text-sm font-medium text-foreground">
-              {formatInTz(session.end_time, displayTz, 'EEE, MMM d')}
+            <div className="flex items-center gap-2">
+              <p className="text-sm font-medium text-foreground">
+                {formatInTz(session.end_time, displayTz, 'EEE, MMM d')}
+              </p>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {formatInTz(session.end_time, displayTz, 'yyyy')}
             </p>
           </div>
-          <p className="text-xs text-muted-foreground">
-            {formatInTz(session.end_time, displayTz, 'yyyy')}
-          </p>
-        </div>
 
-        {/* Right side - Top: Stages bar, Bottom: Stats */}
-        <div className="flex-1 flex flex-col gap-2 mx-4">
-          {/* Top: Sleep Stages Bar */}
-          <SleepStagesBar stages={session.stages} className="h-3 mb-4" />
+          {/* Right side - Top: Stages bar, Bottom: Stats */}
+          <div className="flex-1 flex flex-col gap-2 mx-4">
+            {/* Top: Sleep Stages Bar */}
+            <SleepStagesBar stages={session.stages} className="h-3 mb-4" />
 
-          {/* Bottom: Stats - evenly spaced */}
-          <div className="flex items-center justify-around">
-            {/* Efficiency */}
-            <div className="flex items-center gap-2">
-              <Zap className="h-4 w-4 text-[hsl(var(--success-muted))]" />
-              <div>
-                <p className="text-sm font-medium text-foreground">
-                  {session.efficiency_percent !== null
-                    ? `${Math.round(session.efficiency_percent)}%`
-                    : '-'}
-                </p>
-                <p className="text-xs text-muted-foreground">Efficiency</p>
+            {/* Bottom: Stats - evenly spaced */}
+            <div className="flex items-center justify-around">
+              {/* Efficiency */}
+              <div className="flex items-center gap-2">
+                <Zap className="h-4 w-4 text-success-muted" />
+                <div>
+                  <p className="text-sm font-medium text-foreground">
+                    {session.efficiency_percent !== null
+                      ? `${Math.round(session.efficiency_percent)}%`
+                      : '-'}
+                  </p>
+                  <p className="text-xs text-muted-foreground">Efficiency</p>
+                </div>
               </div>
-            </div>
 
-            {/* Duration (actual sleep, awake time excluded) */}
-            <div className="flex items-center gap-2">
-              <Moon className="h-4 w-4 text-indigo-400" />
-              <div>
-                <p className="text-sm font-medium text-foreground">
-                  {session.sleep_duration_seconds !== null
-                    ? formatDuration(session.sleep_duration_seconds)
-                    : '-'}
-                </p>
-                <p className="text-xs text-muted-foreground">Duration</p>
+              {/* Duration (actual sleep, awake time excluded) */}
+              <div className="flex items-center gap-2">
+                <Moon className="h-4 w-4 text-indigo-400" />
+                <div>
+                  <p className="text-sm font-medium text-foreground">
+                    {session.sleep_duration_seconds !== null
+                      ? formatDuration(session.sleep_duration_seconds)
+                      : '-'}
+                  </p>
+                  <p className="text-xs text-muted-foreground">Duration</p>
+                </div>
               </div>
-            </div>
 
-            {/* Time in Bed (end - start) */}
-            <div className="flex items-center gap-2">
-              <BedDouble className="h-4 w-4 text-purple-400" />
-              <div>
-                <p className="text-sm font-medium text-foreground">
-                  {formatDuration(session.duration_seconds)}
-                </p>
-                <p className="text-xs text-muted-foreground">Time in Bed</p>
+              {/* Time in Bed (end - start) */}
+              <div className="flex items-center gap-2">
+                <BedDouble className="h-4 w-4 text-purple-400" />
+                <div>
+                  <p className="text-sm font-medium text-foreground">
+                    {formatDuration(session.duration_seconds)}
+                  </p>
+                  <p className="text-xs text-muted-foreground">Time in Bed</p>
+                </div>
               </div>
-            </div>
 
-            {/* Bedtime */}
-            <div className="flex items-center gap-2 w-32">
-              <Clock className="h-4 w-4 text-sky-400 flex-shrink-0" />
-              <div>
-                <p className="text-sm font-medium text-foreground">
-                  {(() => {
-                    // Render bedtime in the dashboard's display timezone
-                    // (fork display-tz feature), but keep upstream's overnight
-                    // weekday prefix when the session crosses a calendar day.
-                    const start = new Date(session.start_time);
-                    const end = new Date(session.end_time);
-                    const overnight =
-                      start.getFullYear() !== end.getFullYear() ||
-                      start.getMonth() !== end.getMonth() ||
-                      start.getDate() !== end.getDate();
-                    return formatInTz(
-                      session.start_time,
-                      displayTz,
-                      overnight ? 'EEE h:mm a' : 'h:mm a'
-                    );
-                  })()}
-                </p>
-                <p className="text-xs text-muted-foreground">Bedtime</p>
+              {/* Bedtime */}
+              <div className="flex items-center gap-2 w-32">
+                <Clock className="h-4 w-4 text-sky-400 flex-shrink-0" />
+                <div>
+                  <p className="text-sm font-medium text-foreground">
+                    {(() => {
+                      const start = new Date(session.start_time);
+                      const end = new Date(session.end_time);
+                      const overnight =
+                        start.getFullYear() !== end.getFullYear() ||
+                        start.getMonth() !== end.getMonth() ||
+                        start.getDate() !== end.getDate();
+                      // Render bedtime in the dashboard's display timezone
+                      // (fork display-tz feature), but keep upstream's overnight
+                      // weekday prefix when the session crosses a calendar day.
+                      return formatInTz(
+                        session.start_time,
+                        displayTz,
+                        overnight ? 'EEE h:mm a' : 'h:mm a'
+                      );
+                    })()}
+                  </p>
+                  <p className="text-xs text-muted-foreground">Bedtime</p>
+                </div>
               </div>
-            </div>
 
-            {/* Wake Time */}
-            <div className="flex items-center gap-2">
-              <Clock className="h-4 w-4 text-[hsl(var(--warning-muted))]" />
-              <div>
-                <p className="text-sm font-medium text-foreground">
-                  {formatInTz(session.end_time, displayTz, 'h:mm a')}
-                </p>
-                <p className="text-xs text-muted-foreground">Wake</p>
+              {/* Wake Time */}
+              <div className="flex items-center gap-2">
+                <Clock className="h-4 w-4 text-warning-muted" />
+                <div>
+                  <p className="text-sm font-medium text-foreground">
+                    {formatInTz(session.end_time, displayTz, 'h:mm a')}
+                  </p>
+                  <p className="text-xs text-muted-foreground">Wake</p>
+                </div>
               </div>
             </div>
           </div>
+
+          {/* Expand indicator */}
+          {hasDetails && (
+            <div className="w-8 flex-shrink-0 flex justify-end ml-2">
+              {isExpanded ? (
+                <ChevronUp className="h-5 w-5 text-muted-foreground" />
+              ) : (
+                <ChevronDown className="h-5 w-5 text-muted-foreground" />
+              )}
+            </div>
+          )}
         </div>
 
-        {/* Expand indicator */}
-        {hasDetails && (
-          <div className="w-8 flex-shrink-0 flex justify-end ml-2">
-            {isExpanded ? (
-              <ChevronUp className="h-5 w-5 text-muted-foreground" />
-            ) : (
-              <ChevronDown className="h-5 w-5 text-muted-foreground" />
-            )}
-          </div>
-        )}
+        <DataSourceInfo source={session.source} />
       </button>
 
       {/* Expanded details */}
@@ -374,6 +374,7 @@ function SleepSessionRow({
                     content={<ChartTooltipContent />}
                   />
                   <Line
+                    isAnimationActive={false}
                     dataKey="hr"
                     type="monotone"
                     stroke="var(--color-avgHr)"
@@ -440,7 +441,7 @@ function SleepSessionRow({
           <div className="flex justify-end pt-2 border-t border-border/40">
             <button
               onClick={() => setShowDelete(true)}
-              className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-[hsl(var(--destructive-muted))] transition-colors"
+              className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-destructive-muted transition-colors"
             >
               <Trash2 className="h-3.5 w-3.5" />
               Delete sleep session
@@ -522,7 +523,6 @@ export function SleepSection({
 }: SleepSectionProps) {
   // Cursor-based pagination for sleep sessions
   const pagination = useCursorPagination();
-  const { displayTz } = useDisplayTimezone();
 
   // Deduplicate sessions across providers (highest-priority source per night).
   // On by default; the backend flag preserves raw multi-source data when off.
@@ -567,12 +567,10 @@ export function SleepSection({
   const handleNextPage = () => pagination.goToNextPage(nextCursor);
   const handlePrevPage = pagination.goToPrevPage;
 
-  // Calculate aggregate statistics from date-range filtered summaries.
-  // Pass displayTz so avgBedtime is computed in the user's chosen viewing zone
-  // rather than the browser's local zone.
+  // Calculate aggregate statistics from date-range filtered summaries
   const stats = useMemo(
-    () => calculateSleepStats(sleepSummaries?.data || [], displayTz),
-    [sleepSummaries, displayTz]
+    () => calculateSleepStats(sleepSummaries?.data || []),
+    [sleepSummaries]
   );
 
   // Get displayed sessions from current page data
@@ -598,9 +596,6 @@ export function SleepSection({
           parseApiDate(a.date).getTime() - parseApiDate(b.date).getTime()
       )
       .map((s) => ({
-        // s.date is a YYYY-MM-DD calendar date bucketed by the backend; render
-        // it via parseApiDate (local-component Date) so the "May 3" label stays
-        // stable in every timezone — calendar dates aren't shifted.
         date: format(parseApiDate(s.date), 'MMM d'),
         value: currentMetric.getChartValue(s),
       }));
@@ -715,6 +710,7 @@ export function SleepSection({
                         }
                       />
                       <Bar
+                        isAnimationActive={false}
                         dataKey="value"
                         fill="var(--color-value)"
                         radius={[4, 4, 0, 0]}
