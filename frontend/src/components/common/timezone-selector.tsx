@@ -33,7 +33,10 @@ interface TimezoneSelectorProps {
   className?: string;
 }
 
-export function TimezoneSelector({ userTimezone, className }: TimezoneSelectorProps) {
+export function TimezoneSelector({
+  userTimezone,
+  className,
+}: TimezoneSelectorProps) {
   const { displayTz, setDisplayTz, resetDisplayTz } = useDisplayTimezone();
 
   const hasUserTz = !!userTimezone && userTimezone.length > 0;
@@ -44,7 +47,7 @@ export function TimezoneSelector({ userTimezone, className }: TimezoneSelectorPr
   const buttonLabel =
     displayTz === userTimezone && hasUserTz
       ? `${userTimezone} (user)`
-      : matchedCommon?.label ?? displayTz;
+      : (matchedCommon?.label ?? displayTz);
 
   return (
     <DropdownMenu>
@@ -104,7 +107,9 @@ export function TimezoneSelector({ userTimezone, className }: TimezoneSelectorPr
         {displayTz !== DEFAULT_DISPLAY_TZ && (
           <>
             <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={resetDisplayTz}>Reset to UTC</DropdownMenuItem>
+            <DropdownMenuItem onClick={resetDisplayTz}>
+              Reset to UTC
+            </DropdownMenuItem>
           </>
         )}
 

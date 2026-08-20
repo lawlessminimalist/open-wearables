@@ -1,0 +1,153 @@
+name: Publish to GHCR
+
+# Fork-owned image publishing. Builds the production images and pushes them to
+# THIS repository's GitHub Container Registry, replacing the local
+# `make push_local_k3s` / scripts/build-push.sh loop for anything that isn't
+# fast local iteration.
+#
+# Why a separate file from upstream's publish-images.yml:
+#   * Upstream publishes to Docker Hub under `themomentum/...` using
+#     DOCKERHUB_USERNAME / DOCKERHUB_TOKEN, which this fork does not have.
+#   * Keeping fork divergence in a fork-owned file means `git merge upstream/main`
+#     never conflicts here — the same reasoning as ow-patches/PATCHES.md.
+#
+# Images (names match scripts/build-push.sh so deployment manifests only need
+# their registry prefix changed):
+#   ghcr.io/<owner>/open-wearables-platform    <- backend, used by app + celery
+#   ghcr.io/<owner>/open-wearables-frontend
+#
+# VITE_API_URL is deliberately NOT baked in. The frontend resolves it at runtime
+# from the container's env via window.__APP_CONFIG__ (see
+# frontend/src/lib/api/runtime-config.ts), so one image serves every environment.
+#
+# Triggers:
+#   push to main            -> :latest, :main, :sha-<short>
+#   push tag v*             -> :vX.Y.Z, :X.Y, :X, plus a GitHub Release
+#   manual (any branch)     -> :sha-<short>, :<branch>, plus an optional extra tag
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+      - ow-patches/**.md
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Extra image tag to push (in addition to the SHA/branch tags). Leave empty to skip."
+        required: false
+        default: ""
+
+# One publish per ref at a time; don't cancel a half-pushed manifest.
+concurrency:
+  group: publish-ghcr-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    name: Build & push ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: backend
+            context: ./backend
+            dockerfile: ./backend/Dockerfile
+            image: open-wearables-platform
+          - name: frontend
+            context: ./frontend
+            dockerfile: ./frontend/Dockerfile
+            image: open-wearables-frontend
+    steps:
+      - uses: actions/checkout@v5
+
+      # GHCR rejects uppercase path segments, and GitHub usernames may contain them.
+      - name: Lowercase owner
+        id: owner
+        run: echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive image tags & labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ steps.owner.outputs.owner }}/${{ matrix.image }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=branch
+            type=semver,pattern=v{{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=sha,prefix=sha-,format=short
+            type=raw,value=${{ inputs.tag }},enable=${{ inputs.tag != '' }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          # The homelab node is linux/amd64. Add linux/arm64 here if the cluster
+          # ever gains arm nodes — it roughly doubles build time, so not by default.
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Baked into the backend image as the Sentry release. The frontend
+          # Dockerfile doesn't declare this ARG and ignores it.
+          build-args: |
+            GIT_SHA=${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+
+  release:
+    name: GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Lowercase owner
+        id: owner
+        run: echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER: ${{ steps.owner.outputs.owner }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          {
+            echo "Images published to GHCR:"
+            echo
+            echo '```'
+            echo "ghcr.io/${OWNER}/open-wearables-platform:${VERSION}"
+            echo "ghcr.io/${OWNER}/open-wearables-frontend:${VERSION}"
+            echo '```'
+          } > notes.md
+          gh release create "$VERSION" \
+            --title "$VERSION" \
+            --notes-file notes.md \
+            --generate-notes

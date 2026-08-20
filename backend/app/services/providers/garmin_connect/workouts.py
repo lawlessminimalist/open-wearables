@@ -37,7 +37,7 @@ class GarminConnectWorkouts(BaseWorkoutsTemplate):
             connection_repo=connection_repo,
             provider_name=provider_name,
             api_base_url=api_base_url,
-            oauth=None,
+            oauth=None,  # ty: ignore[invalid-argument-type]
         )
         self.client = client
 

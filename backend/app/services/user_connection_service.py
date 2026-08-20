@@ -7,6 +7,7 @@ from app.models import UserConnection
 from app.repositories.user_connection_repository import UserConnectionRepository
 from app.schemas.model_crud.user_management import UserConnectionCreate, UserConnectionUpdate
 from app.schemas.responses.upload import ConnectionsCoverage, ProviderConnectionCount
+from app.services.outgoing_webhooks.events import on_connection_revoked
 from app.services.providers.templates.base_oauth import BaseOAuthTemplate
 from app.services.services import AppService
 from app.utils.exceptions import ResourceNotFoundError, handle_exceptions
@@ -45,6 +46,15 @@ class UserConnectionService(
         """Get all connections for a user."""
         return self.crud.get_by_user_id(db_session, user_id)
 
+    def get_linked_user_ids(
+        self,
+        db_session: DbSession,
+        user_id: UUID,
+        provider_pairs: list[tuple[str, str]],
+    ) -> dict[tuple[str, str], list[UUID]]:
+        """Return other active OW users sharing the same external account, grouped by (provider, provider_user_id)."""
+        return self.crud.get_linked_user_ids(db_session, user_id, provider_pairs)
+
     @handle_exceptions
     def disconnect(
         self, db_session: DbSession, user_id: UUID, provider: str, oauth: BaseOAuthTemplate | None = None
@@ -60,6 +70,15 @@ class UserConnectionService(
         updated = self.crud.disconnect(db_session, user_id, provider)
         if updated:
             self.logger.info("Revoked connection for user %s from provider %s", user_id, provider)
+            connection = self.crud.get_by_user_and_provider(db_session, user_id, provider)
+            if connection:
+                on_connection_revoked(
+                    user_id=user_id,
+                    provider=provider,
+                    connection_id=connection.id,
+                    reason="user_disconnected",
+                    revoked_at=connection.updated_at.isoformat(),
+                )
             return
 
         # Nothing updated - check if connection exists (already revoked) or not found
@@ -93,7 +112,10 @@ class UserConnectionService(
             return
 
         try:
-            oauth.deregister_user(connection.access_token)
+            oauth.deregister_user(
+                connection.access_token,
+                provider_user_id=connection.provider_user_id,
+            )
             log_structured(
                 self.logger,
                 "info",

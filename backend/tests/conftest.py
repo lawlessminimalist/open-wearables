@@ -46,6 +46,7 @@ def _assert_not_prod_db(url: str) -> None:
     against the production database would destroy all app data.
     """
     from urllib.parse import urlparse  # noqa: PLC0415
+
     parsed = urlparse(url)
     db_name = parsed.path.lstrip("/")
     if db_name in _PROD_DB_NAMES:

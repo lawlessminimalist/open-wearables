@@ -6,16 +6,31 @@
 """Wire Ultrahuman SpO2 and respiratory-rate samples through to canonical
 SeriesType records.
 
-Two coordinated changes:
+Three coordinated changes:
   1. normalize_activity_samples — accept the spo2/oxygen_saturation/blood_oxygen
-     and respiratory_rate/breath_rate/breathing_rate/breath type tokens.
+     and respiratory_rate/breath_rate/breathing_rate/breath type tokens and
+     collapse them into canonical "spo2" / "respiratory_rate" buckets.
   2. load_and_save_all — pass those types to the normalizer when present in
      the day's metric_data, and fall back to the Sleep object's `spo2.value`
      (single nightly average) emitted at sleep midpoint when no intraday
      samples are returned.
+  3. coverage.py — ACTIVITY_SAMPLE_SERIES gains "spo2" → oxygen_saturation and
+     "respiratory_rate" → respiratory_rate so save_activity_samples persists the
+     new buckets and TIMESERIES advertises them on the coverage tab. (Source
+     edit — see backend/app/services/providers/ultrahuman/coverage.py — because
+     upstream's save path now resolves series types via that constant and
+     TIMESERIES is a frozenset bound at import time.)
+
+Rebased onto upstream's current bodies (post-merge): load_and_save_all keeps
+upstream's active_time → SeriesType.active_time ingestion block (#1242 76ffff4)
+in addition to the existing vo2_max block.
 
 This patch composes with fix-hrv-source-unknown via apply.py — both target the
-same class, but different methods.
+same class but different methods. fix-hrv owns save_activity_samples (which
+consumes the "spo2"/"respiratory_rate" buckets produced here). The direct
+TimeSeriesSampleCreate calls in this file (vo2_max, active_time) mirror that
+patch's fix by passing source=self.provider_name so they don't surface as
+"unknown".
 """
 
 from datetime import datetime, timedelta, timezone
@@ -150,10 +165,13 @@ def load_and_save_all(
     end_time: datetime | str | None = None,
     is_first_sync: bool = False,
 ) -> dict[str, Any]:
-    """Patched daily fetch loop that includes SpO2 and respiratory rate.
+    """Load and save all 247 data types by fetching daily metrics.
 
-    Identical to upstream's loop except for the intraday_types list and the
-    Sleep-object SpO2 fallback near the bottom.
+    Rebased onto upstream's current body. Deltas vs upstream: the intraday_types
+    list also feeds the SpO2 / respiratory-rate variants to the normalizer, and a
+    Sleep-object SpO2 fallback emits the single nightly average at the sleep
+    midpoint when no intraday samples are returned. Upstream's vo2_max and
+    active_time (#1242) ingestion blocks are preserved.
     """
     if isinstance(start_time, str):
         start_time = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
@@ -182,12 +200,14 @@ def load_and_save_all(
         try:
             metrics_list = self._fetch_daily_metrics(db, user_id, current_date)
 
+            # Group items by type
             items_by_type = {}
             for item in metrics_list:
                 t = item.get("type")
                 if t and "object" in item:
                     items_by_type[t] = item["object"]
 
+            # 1. Process Sleep
             if "Sleep" in items_by_type:
                 try:
                     normalized_sleep = self.normalize_sleep(items_by_type["Sleep"], user_id)
@@ -196,9 +216,11 @@ def load_and_save_all(
                 except Exception as e:
                     day_error = f"Sleep processing failed: {e}"
 
+            # 2. Process Activity Samples
             try:
-                # Pass any of the SpO2 / respiratory variants the API may return;
-                # the normalizer collapses them into a single canonical bucket.
+                # Prepare list for normalization. Pass any of the SpO2 /
+                # respiratory variants the API may return; the normalizer
+                # collapses them into a single canonical bucket.
                 sample_inputs = []
                 intraday_types = ["hr", "hrv", "temp", "steps", *_SPO2_TYPES, *_RESPIRATORY_TYPES]
                 for t in intraday_types:
@@ -224,6 +246,7 @@ def load_and_save_all(
                     saved_count = self.save_activity_samples(db, user_id, normalized_samples)
                     results["activity_samples"] += saved_count
 
+                # VO2 max (single daily value, not a time series)
                 if "vo2_max" in items_by_type:
                     vo2_obj = items_by_type["vo2_max"]
                     vo2_value = vo2_obj.get("value")
@@ -233,6 +256,7 @@ def load_and_save_all(
                         ts_sample = TimeSeriesSampleCreate(
                             id=uuid4(),
                             user_id=user_id,
+                            provider=self.provider_name,
                             source=self.provider_name,
                             recorded_at=recorded_at,
                             value=Decimal(str(vo2_value)),
@@ -240,15 +264,40 @@ def load_and_save_all(
                         )
                         self.data_point_repo.create(db, ts_sample)
                         results["activity_samples"] += 1
+
+                # Active time (single daily value in minutes, like vo2_max)
+                if "active_minutes" in items_by_type:
+                    active_obj = items_by_type["active_minutes"]
+                    active_value = active_obj.get("value")
+                    active_ts = active_obj.get("day_start_timestamp")
+                    if active_value is not None and active_ts:
+                        recorded_at = datetime.fromtimestamp(active_ts, tz=timezone.utc)
+                        self.data_point_repo.create(
+                            db,
+                            TimeSeriesSampleCreate(
+                                id=uuid4(),
+                                user_id=user_id,
+                                provider=self.provider_name,
+                                source=self.provider_name,
+                                recorded_at=recorded_at,
+                                value=Decimal(str(active_value)),
+                                series_type=SeriesType.active_time,
+                                is_daily_total=True,
+                            ),
+                        )
+                        results["activity_samples"] += 1
             except Exception as e:
                 day_error = f"Activity samples processing failed: {e}"
 
         except HTTPException:
+            # Fatal errors from _fetch_daily_metrics (401, 403) should be raised
             raise
 
         except Exception as e:
+            # Any other error processing this day
             day_error = f"Unexpected error: {e}"
 
+        # Track errors for this day
         if day_error:
             results["failed_days"] += 1
             results["errors"].append({"date": date_str, "error": day_error})

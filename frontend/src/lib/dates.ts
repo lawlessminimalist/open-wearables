@@ -34,7 +34,7 @@ export const DEFAULT_DISPLAY_TZ = 'UTC';
 export function formatInTz(
   input: string | Date | null | undefined,
   tz: string | null | undefined,
-  fmt: string,
+  fmt: string
 ): string {
   if (input === null || input === undefined || input === '') {
     return '';
@@ -45,7 +45,10 @@ export function formatInTz(
   } catch (err) {
     if (zone !== DEFAULT_DISPLAY_TZ) {
       // eslint-disable-next-line no-console
-      console.warn(`formatInTz: invalid timezone ${JSON.stringify(zone)}, falling back to UTC`, err);
+      console.warn(
+        `formatInTz: invalid timezone ${JSON.stringify(zone)}, falling back to UTC`,
+        err
+      );
     }
     try {
       return formatInTimeZone(input, DEFAULT_DISPLAY_TZ, fmt);
@@ -60,7 +63,10 @@ export function formatInTz(
  * reflect the given timezone. Useful when feeding a charting library that
  * formats Dates with the local-zone formatters and expects "naive" wall time.
  */
-export function toLocalWallTime(input: string | Date, tz: string | null | undefined): Date {
+export function toLocalWallTime(
+  input: string | Date,
+  tz: string | null | undefined
+): Date {
   const zone = tz && tz.length > 0 ? tz : DEFAULT_DISPLAY_TZ;
   return toZonedTime(input, zone);
 }
@@ -92,7 +98,10 @@ export const COMMON_TIMEZONES: Array<{ value: string; label: string }> = [
 ];
 
 /** Convenience for the (rare) places that need a non-tz-aware format. */
-export function formatLocal(input: string | Date | null | undefined, fmt: string): string {
+export function formatLocal(
+  input: string | Date | null | undefined,
+  fmt: string
+): string {
   if (input === null || input === undefined || input === '') return '';
   return format(typeof input === 'string' ? new Date(input) : input, fmt);
 }

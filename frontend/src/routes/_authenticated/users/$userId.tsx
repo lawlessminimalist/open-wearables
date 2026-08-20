@@ -16,6 +16,7 @@ import {
   Smartphone,
   Copy,
   Ellipsis,
+  Heart,
   type LucideIcon,
 } from 'lucide-react';
 import {
@@ -24,6 +25,7 @@ import {
   useAppleXmlUpload,
   useGenerateInvitationCode,
 } from '@/hooks/api/use-users';
+import { useUserDataSummary } from '@/hooks/api/use-health';
 import { ROUTES } from '@/lib/constants/routes';
 import { API_CONFIG } from '@/lib/api/config';
 import { copyToClipboard } from '@/lib/utils/clipboard';
@@ -36,6 +38,7 @@ import { WorkoutSection } from '@/components/user/workout-section';
 import { ScoresSection } from '@/components/user/scores-section';
 import { DisplayTimezoneProvider } from '@/contexts/display-timezone';
 import { TimezoneSelector } from '@/components/common/timezone-selector';
+import { WomensHealthSection } from '@/components/user/womens-health-section';
 import type { DateRangeValue } from '@/components/ui/date-range-selector';
 import {
   AlertDialog,
@@ -85,6 +88,7 @@ function UserDetailPage() {
   const { userId } = Route.useParams();
   const navigate = useNavigate();
   const { data: user, isLoading: userLoading } = useUser(userId);
+  const { data: dataSummary } = useUserDataSummary(userId);
 
   // Tab state
   const [activeTab, setActiveTab] = useState('profile');
@@ -95,6 +99,8 @@ function UserDetailPage() {
     useState<DateRangeValue>(30);
   const [sleepDateRange, setSleepDateRange] = useState<DateRangeValue>(30);
   const [scoresDateRange, setScoresDateRange] = useState<DateRangeValue>(30);
+  const [womensHealthDateRange, setWomensHealthDateRange] =
+    useState<DateRangeValue>(90);
 
   const { mutate: deleteUser, isPending: isDeleting } = useDeleteUser();
   const { handleUpload, isUploading: isUploadingFile } = useAppleXmlUpload();
@@ -175,6 +181,22 @@ function UserDetailPage() {
           />
         ),
       },
+      ...(dataSummary?.has_womens_health_data
+        ? [
+            {
+              id: 'womens-health',
+              label: "Women's Health",
+              icon: Heart,
+              content: (
+                <WomensHealthSection
+                  userId={userId}
+                  dateRange={womensHealthDateRange}
+                  onDateRangeChange={setWomensHealthDateRange}
+                />
+              ),
+            },
+          ]
+        : []),
     ],
     [
       userId,
@@ -182,6 +204,8 @@ function UserDetailPage() {
       activityDateRange,
       sleepDateRange,
       scoresDateRange,
+      womensHealthDateRange,
+      dataSummary?.has_womens_health_data,
     ]
   );
 
@@ -245,239 +269,240 @@ function UserDetailPage() {
 
   return (
     <DisplayTimezoneProvider userId={userId}>
-    <div className="p-8 space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-4">
-          <Link
-            to={ROUTES.users}
-            className="p-2 text-muted-foreground hover:text-foreground hover:bg-muted rounded-md transition-colors"
-          >
-            <ArrowLeft className="h-5 w-5" />
-          </Link>
-          {userLoading ? (
-            <div className="space-y-2">
-              <div className="h-7 w-48 bg-muted rounded animate-pulse" />
-              <div className="h-4 w-32 bg-muted/50 rounded animate-pulse" />
-            </div>
-          ) : (
-            <div>
-              <h1 className="text-2xl font-medium text-foreground">
-                {user?.first_name || user?.last_name
-                  ? `${user?.first_name || ''} ${user?.last_name || ''}`.trim()
-                  : 'Unnamed User'}
-              </h1>
-              <p className="text-sm text-muted-foreground">
-                {user?.email || 'No email'}
-              </p>
-            </div>
-          )}
-        </div>
-        <div className="flex items-center gap-2">
-          <TimezoneSelector userTimezone={user?.timezone ?? null} />
-          <Button variant="secondary" onClick={handleCopyPairLink}>
-            {copied ? (
-              <>
-                <Check className="h-4 w-4 text-[hsl(var(--success-muted))]" />
-                Copied!
-              </>
+      <div className="p-8 space-y-6">
+        {/* Header */}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <Link
+              to={ROUTES.users}
+              className="p-2 text-muted-foreground hover:text-foreground hover:bg-muted rounded-md transition-colors"
+            >
+              <ArrowLeft className="h-5 w-5" />
+            </Link>
+            {userLoading ? (
+              <div className="space-y-2">
+                <div className="h-7 w-48 bg-muted rounded animate-pulse" />
+                <div className="h-4 w-32 bg-muted/50 rounded animate-pulse" />
+              </div>
             ) : (
-              <>
-                <LinkIcon className="h-4 w-4" />
-                Copy Pairing Link
-              </>
+              <div>
+                <h1 className="text-2xl font-medium text-foreground">
+                  {user?.first_name || user?.last_name
+                    ? `${user?.first_name || ''} ${user?.last_name || ''}`.trim()
+                    : 'Unnamed User'}
+                </h1>
+                <p className="text-sm text-muted-foreground">
+                  {user?.email || 'No email'}
+                </p>
+              </div>
             )}
-          </Button>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant="secondary"
-                onClick={handleGenerateInvitationCode}
-                disabled={isGeneratingCode}
-              >
-                {isGeneratingCode ? (
-                  <>
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    Generating...
-                  </>
-                ) : (
-                  <>
-                    <Smartphone className="h-4 w-4" />
-                    Connect Mobile App
-                  </>
-                )}
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom">
-              Generate a one-time code to connect the Open Wearables iOS app
-            </TooltipContent>
-          </Tooltip>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".xml"
-            onChange={(e) => handleUpload(userId, e)}
-            className="hidden"
-          />
-          <AlertDialog
-            open={isDeleteDialogOpen}
-            onOpenChange={setIsDeleteDialogOpen}
-          >
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
+          </div>
+          <div className="flex items-center gap-2">
+            <TimezoneSelector userTimezone={user?.timezone ?? null} />
+            <Button variant="secondary" onClick={handleCopyPairLink}>
+              {copied ? (
+                <>
+                  <Check className="h-4 w-4 text-[hsl(var(--success-muted))]" />
+                  Copied!
+                </>
+              ) : (
+                <>
+                  <LinkIcon className="h-4 w-4" />
+                  Copy Pairing Link
+                </>
+              )}
+            </Button>
+            <Tooltip>
+              <TooltipTrigger asChild>
                 <Button
                   variant="secondary"
-                  size="icon"
-                  aria-label="More user actions"
+                  onClick={handleGenerateInvitationCode}
+                  disabled={isGeneratingCode}
                 >
-                  <Ellipsis className="h-4 w-4" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent
-                align="end"
-                className="bg-muted border-border/50"
-              >
-                <DropdownMenuItem
-                  onSelect={handleUploadClick}
-                  disabled={isUploading}
-                >
-                  {isUploading ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
+                  {isGeneratingCode ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Generating...
+                    </>
                   ) : (
-                    <Upload className="h-4 w-4" />
-                  )}
-                  {isUploading ? 'Uploading...' : 'Upload Apple Health XML'}
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  className="text-destructive focus:text-destructive"
-                  disabled={isDeleting}
-                  onSelect={() => setIsDeleteDialogOpen(true)}
-                >
-                  <Trash2 className="h-4 w-4" />
-                  {isDeleting ? 'Deleting...' : 'Delete User'}
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-            <AlertDialogContent>
-              <AlertDialogHeader>
-                <AlertDialogTitle>Delete User</AlertDialogTitle>
-                <AlertDialogDescription>
-                  Are you sure you want to delete this user? This action cannot
-                  be undone and will permanently remove all associated data.
-                </AlertDialogDescription>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogCancel>Cancel</AlertDialogCancel>
-                <AlertDialogAction onClick={handleDelete}>
-                  Delete
-                </AlertDialogAction>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          </AlertDialog>
-        </div>
-      </div>
-
-      {/* Tabs */}
-      <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <TabsList>
-          {tabs.map((tab) => (
-            <TabsTrigger key={tab.id} value={tab.id} className="gap-2">
-              <tab.icon className="h-4 w-4" />
-              {tab.label}
-            </TabsTrigger>
-          ))}
-        </TabsList>
-        {tabs.map((tab) => (
-          <TabsContent key={tab.id} value={tab.id} className="space-y-6">
-            {tab.content}
-          </TabsContent>
-        ))}
-      </Tabs>
-
-      {/* Invitation Code Dialog */}
-      <Dialog open={isCodeDialogOpen} onOpenChange={setIsCodeDialogOpen}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>Connect Mobile App</DialogTitle>
-            <DialogDescription>
-              Enter these details in the Open Wearables iOS app to connect it to
-              this user's account. The invitation code is single-use and will
-              expire.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="api-url" className="text-foreground/90">
-                API URL
-              </Label>
-              <div className="flex items-center gap-2">
-                <Input
-                  id="api-url"
-                  readOnly
-                  value={API_CONFIG.baseUrl}
-                  className="bg-muted border-border font-mono text-sm focus-visible:ring-0"
-                />
-                <Button
-                  onClick={async () => {
-                    const success = await copyToClipboard(
-                      API_CONFIG.baseUrl,
-                      'API URL copied to clipboard'
-                    );
-                    if (success) {
-                      setUrlCopied(true);
-                      setTimeout(() => setUrlCopied(false), 2000);
-                    }
-                  }}
-                  variant="outline"
-                  size="icon"
-                  className="shrink-0"
-                  aria-label="Copy API URL"
-                >
-                  {urlCopied ? (
-                    <Check className="h-4 w-4 text-[hsl(var(--success-muted))]" />
-                  ) : (
-                    <Copy className="h-4 w-4" />
+                    <>
+                      <Smartphone className="h-4 w-4" />
+                      Connect Mobile App
+                    </>
                   )}
                 </Button>
-              </div>
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="invitation-code" className="text-foreground/90">
-                Invitation Code
-              </Label>
-              <div className="flex items-center gap-2">
-                <Input
-                  id="invitation-code"
-                  readOnly
-                  value={invitationCodeData?.code || ''}
-                  className="bg-muted border-border font-mono text-lg tracking-widest text-center focus-visible:ring-0"
-                />
-                <Button
-                  onClick={handleCopyCode}
-                  variant="outline"
-                  size="icon"
-                  className="shrink-0"
-                  aria-label="Copy invitation code"
+              </TooltipTrigger>
+              <TooltipContent side="bottom">
+                Generate a one-time code to connect the Open Wearables iOS app
+              </TooltipContent>
+            </Tooltip>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".xml"
+              onChange={(e) => handleUpload(userId, e)}
+              className="hidden"
+            />
+            <AlertDialog
+              open={isDeleteDialogOpen}
+              onOpenChange={setIsDeleteDialogOpen}
+            >
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    variant="secondary"
+                    size="icon"
+                    aria-label="More user actions"
+                  >
+                    <Ellipsis className="h-4 w-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent
+                  align="end"
+                  className="bg-muted border-border/50"
                 >
-                  {codeCopied ? (
-                    <Check className="h-4 w-4 text-[hsl(var(--success-muted))]" />
-                  ) : (
-                    <Copy className="h-4 w-4" />
-                  )}
-                </Button>
-              </div>
-              {invitationCodeData?.expires_at && (
-                <p className="text-xs text-muted-foreground">
-                  Expires:{' '}
-                  {new Date(invitationCodeData.expires_at).toLocaleString()}
-                </p>
-              )}
-            </div>
+                  <DropdownMenuItem
+                    onSelect={handleUploadClick}
+                    disabled={isUploading}
+                  >
+                    {isUploading ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Upload className="h-4 w-4" />
+                    )}
+                    {isUploading ? 'Uploading...' : 'Upload Apple Health XML'}
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    className="text-destructive focus:text-destructive"
+                    disabled={isDeleting}
+                    onSelect={() => setIsDeleteDialogOpen(true)}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                    {isDeleting ? 'Deleting...' : 'Delete User'}
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Delete User</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    Are you sure you want to delete this user? This action
+                    cannot be undone and will permanently remove all associated
+                    data.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Cancel</AlertDialogCancel>
+                  <AlertDialogAction onClick={handleDelete}>
+                    Delete
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
           </div>
-        </DialogContent>
-      </Dialog>
-    </div>
+        </div>
+
+        {/* Tabs */}
+        <Tabs value={activeTab} onValueChange={setActiveTab}>
+          <TabsList>
+            {tabs.map((tab) => (
+              <TabsTrigger key={tab.id} value={tab.id} className="gap-2">
+                <tab.icon className="h-4 w-4" />
+                {tab.label}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+          {tabs.map((tab) => (
+            <TabsContent key={tab.id} value={tab.id} className="space-y-6">
+              {tab.content}
+            </TabsContent>
+          ))}
+        </Tabs>
+
+        {/* Invitation Code Dialog */}
+        <Dialog open={isCodeDialogOpen} onOpenChange={setIsCodeDialogOpen}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>Connect Mobile App</DialogTitle>
+              <DialogDescription>
+                Enter these details in the Open Wearables iOS app to connect it
+                to this user's account. The invitation code is single-use and
+                will expire.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="api-url" className="text-foreground/90">
+                  API URL
+                </Label>
+                <div className="flex items-center gap-2">
+                  <Input
+                    id="api-url"
+                    readOnly
+                    value={API_CONFIG.baseUrl}
+                    className="bg-muted border-border font-mono text-sm focus-visible:ring-0"
+                  />
+                  <Button
+                    onClick={async () => {
+                      const success = await copyToClipboard(
+                        API_CONFIG.baseUrl,
+                        'API URL copied to clipboard'
+                      );
+                      if (success) {
+                        setUrlCopied(true);
+                        setTimeout(() => setUrlCopied(false), 2000);
+                      }
+                    }}
+                    variant="outline"
+                    size="icon"
+                    className="shrink-0"
+                    aria-label="Copy API URL"
+                  >
+                    {urlCopied ? (
+                      <Check className="h-4 w-4 text-[hsl(var(--success-muted))]" />
+                    ) : (
+                      <Copy className="h-4 w-4" />
+                    )}
+                  </Button>
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="invitation-code" className="text-foreground/90">
+                  Invitation Code
+                </Label>
+                <div className="flex items-center gap-2">
+                  <Input
+                    id="invitation-code"
+                    readOnly
+                    value={invitationCodeData?.code || ''}
+                    className="bg-muted border-border font-mono text-lg tracking-widest text-center focus-visible:ring-0"
+                  />
+                  <Button
+                    onClick={handleCopyCode}
+                    variant="outline"
+                    size="icon"
+                    className="shrink-0"
+                    aria-label="Copy invitation code"
+                  >
+                    {codeCopied ? (
+                      <Check className="h-4 w-4 text-[hsl(var(--success-muted))]" />
+                    ) : (
+                      <Copy className="h-4 w-4" />
+                    )}
+                  </Button>
+                </div>
+                {invitationCodeData?.expires_at && (
+                  <p className="text-xs text-muted-foreground">
+                    Expires:{' '}
+                    {new Date(invitationCodeData.expires_at).toLocaleString()}
+                  </p>
+                )}
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
+      </div>
     </DisplayTimezoneProvider>
   );
 }

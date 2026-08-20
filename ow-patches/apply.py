@@ -37,12 +37,20 @@ PATCHES_ENABLED: dict[str, bool] = {
     "fix-spo2-respiratory-missing": True,
     "fix-sleep-stages-missing": True,
     "fix-sleep-timezone": True,
-    "fix-active-minutes-broken": True,
+    # Retired: upstream #1242 (76ffff4) adds SeriesType.active_time →
+    # active_time_minutes, preferred over the step heuristic in
+    # get_activity_summaries, and the repo now excludes is_daily_total rows from
+    # the per-minute bucket so it no longer collapses to 1. See PATCHES.md.
+    # NOTE: active_minutes is still computed by the composed
+    # fix-calories-total-mislabelled base_impl until that patch is rebased to a
+    # decorator at merge time — this flag flip is bookkeeping ahead of the merge.
+    "fix-active-minutes-broken": False,
     "fix-activity-summary-utc-bucketing": True,
     "fix-garmin-connect-activity-hr-samples": True,
     "fix-summary-timezone-echo": True,
     "fix-sleep-summary-utc-bucketing": True,
     "fix-health-score-source-priority": True,
+    "fix-garmin-connect-rate-limit-backoff": True,
 }
 
 
@@ -85,14 +93,14 @@ def _patch(patch_id: str):
 #                                               + fix-sleep-timezone (timezone fields)
 #
 #   SummariesService.get_activity_summaries  <- fix-calories-total-mislabelled
-#                                               + fix-active-minutes-broken
+#                                               + fix-summary-timezone-echo
 #
-# get_sleep_summaries is now OWNED by upstream (commit 09b7b0a populates the
-# HRV/RR/SpO2 metrics that fix-hrv-nightly-aggregate used to add — that patch is
-# retired). The two remaining sleep patches are pure decorators: the composer
-# wraps upstream's method and post-processes each summary in the response. The
-# get_activity_summaries replacement still lives in
-# fix-calories-total-mislabelled.py.
+# Both target functions are now OWNED by upstream — all four remaining patches
+# are pure DECORATORS: the composer wraps upstream's method and post-processes
+# each summary in the response, inheriting upstream changes instead of shadowing
+# them (get_sleep_summaries: commit 09b7b0a; get_activity_summaries: #1242's
+# active_time_minutes). fix-hrv-nightly-aggregate and fix-active-minutes-broken
+# are retired (their fixes are now upstream). See PATCHES.md.
 # ---------------------------------------------------------------------------
 
 
@@ -142,64 +150,56 @@ def _compose_sleep_summaries() -> None:
 
 
 def _compose_activity_summaries() -> None:
-    """Install the get_activity_summaries replacement covering
-    {fix-calories-total-mislabelled, fix-active-minutes-broken}.
+    """Decorate upstream's get_activity_summaries with the enabled activity fixes.
+
+    Post-2026-07 merge these are pure post-processors over upstream's response,
+    NOT a wholesale replacement — so they inherit upstream changes (e.g. #1242's
+    active_time_minutes) instead of shadowing them:
+
+      fix-calories-total-mislabelled : rewrite each summary's calorie fields
+          (null total unless active+basal both present; surface basal). The
+          Garmin-side basal persistence is structural (DAILIES_SERIES +
+          garmin_connect override installed via cal_module.install()).
+      fix-summary-timezone-echo      : stamp user.timezone on each summary.
+
+    fix-active-minutes-broken is RETIRED (upstream's active_time_minutes is
+    authoritative) — no active-minutes post-processing happens here anymore.
     """
     enabled_cal = PATCHES_ENABLED.get("fix-calories-total-mislabelled", False)
-    enabled_active = PATCHES_ENABLED.get("fix-active-minutes-broken", False)
+    enabled_tz_echo = PATCHES_ENABLED.get("fix-summary-timezone-echo", False)
 
-    if not (enabled_cal or enabled_active):
-        return
+    if not (enabled_cal or enabled_tz_echo):
+        return  # all upstream — no override
 
     cal_module = _patch("fix-calories-total-mislabelled")
-    base_impl = cal_module.get_activity_summaries
+    if enabled_cal:
+        # Installs the garmin_connect daily-stats override (persists basal energy).
+        cal_module.install()
 
-    enabled_tz_echo = PATCHES_ENABLED.get("fix-summary-timezone-echo", False)
+    # See _compose_sleep_summaries for why we reach through sys.modules.
+    import app.services.summaries_service  # noqa: F401, PLC0415
+
+    _module = sys.modules["app.services.summaries_service"]
+    upstream_impl = _module.SummariesService.get_activity_summaries
 
     def composed(
         self, db_session, user_id, start_date, end_date, cursor, limit, sort_order="asc"
     ):
-        response = base_impl(
+        response = upstream_impl(
             self, db_session, user_id, start_date, end_date, cursor, limit, sort_order
         )
-        if not enabled_cal:
-            # Revert to upstream behavior: total = active + (basal or 0); basal_calories not surfaced.
-            for s in response.data:
-                active_cal = s.active_calories_kcal
-                basal_cal = s.basal_calories_kcal
-                s.basal_calories_kcal = None
-                if active_cal is not None or basal_cal is not None:
-                    s.total_calories_kcal = (active_cal or 0.0) + (basal_cal or 0.0)
-                else:
-                    s.total_calories_kcal = None
-        if not enabled_active:
-            # Revert to upstream behavior: active_minutes from step-bucket only.
-            # We don't have the raw activity_data here, so fall back by clearing
-            # the value when intensity-derived. Upstream's behavior (the buggy 1)
-            # cannot be perfectly emulated without re-querying — disabling this
-            # flag in production with intraday-step providers will simply leave
-            # active_minutes derived from intensity, which is still correct.
-            # Document this caveat in PATCHES.md.
-            pass
-        if not enabled_tz_echo:
-            for s in response.data:
-                s.timezone = None
+        user_tz = None
+        if enabled_tz_echo:
+            user = self.user_repo.get(db_session, user_id)
+            user_tz = getattr(user, "timezone", None) if user else None
+        for summary in response.data:
+            if enabled_cal:
+                cal_module.apply_calories_fix(summary)
+            if enabled_tz_echo:
+                summary.timezone = user_tz
         return response
 
-    if enabled_cal:
-        cal_module.install()
-        # Now overwrite with the composed wrapper so disable-paths apply.
-        from app.services.summaries_service import SummariesService
-
-        SummariesService.get_activity_summaries = composed
-    elif enabled_active:
-        # Calories patch is off but active-minutes is on. Install the same
-        # base implementation (it already implements both) and let the
-        # wrapper undo only the calories piece.
-        cal_module.install()
-        from app.services.summaries_service import SummariesService
-
-        SummariesService.get_activity_summaries = composed
+    _module.SummariesService.get_activity_summaries = composed
 
 
 # ---------------------------------------------------------------------------
@@ -224,7 +224,8 @@ _COMPOSED_PATCHES = (
     "fix-calories-total-mislabelled",
     "fix-sleep-stages-missing",
     "fix-sleep-timezone",
-    "fix-active-minutes-broken",
+    # fix-active-minutes-broken is retired (superseded by upstream #1242) — no
+    # longer composed or loaded; its file is kept for reference. See PATCHES.md.
 )
 
 

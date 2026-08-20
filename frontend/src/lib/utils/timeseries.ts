@@ -17,7 +17,7 @@ export interface HrChartDataPoint {
  */
 export function prepareHrChartData(
   data: TimeSeriesSample[] | undefined,
-  tz: string = DEFAULT_DISPLAY_TZ,
+  tz: string = DEFAULT_DISPLAY_TZ
 ): HrChartDataPoint[] {
   if (!data?.length) return [];
 

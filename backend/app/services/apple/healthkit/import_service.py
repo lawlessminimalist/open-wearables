@@ -5,6 +5,8 @@ from logging import Logger, getLogger
 from typing import Iterable
 from uuid import UUID, uuid4
 
+from pydantic import ValidationError
+
 from app.constants.series_types.sdk import (
     WorkoutStatisticType,
     get_detail_field_from_workout_statistic_type,
@@ -14,7 +16,7 @@ from app.constants.series_types.sdk import (
 from app.constants.workout_types import get_unified_apple_workout_type_sdk
 from app.database import DbSession
 from app.repositories.user_connection_repository import UserConnectionRepository
-from app.schemas.enums import SeriesType
+from app.schemas.enums import SeriesType, daily_total_flag
 from app.schemas.model_crud.activities import (
     EventRecordCreate,
     EventRecordDetailCreate,
@@ -32,10 +34,15 @@ from app.schemas.providers.mobile_sdk import (
 from app.schemas.responses.upload import UploadDataResponse
 from app.services.event_record_service import event_record_service
 from app.services.timeseries_service import timeseries_service
+from app.utils.sentry_helpers import log_and_capture_error
 from app.utils.structured_logging import log_structured
 
 from .device_resolution import extract_device_info
 from .sleep_service import handle_sleep_data
+
+# Health Connect's own mg/dL converter uses exactly 18.0, so values written to HC
+# in mg/dL round-trip with a ~0.1% offset under this factor.
+MMOL_L_TO_MG_DL = Decimal("18.0182")
 
 
 class ImportService:
@@ -110,6 +117,25 @@ class ImportService:
 
             yield record, detail, time_series_samples
 
+    def _normalize_unit(self, series_type: SeriesType, value: Decimal, provider: str | None = None) -> Decimal:
+        match series_type:
+            # meters → cm
+            case SeriesType.height | SeriesType.walking_step_length:
+                return value * 100
+            # 0-1 fraction → percent (body_fat only for Apple; Health Connect already reports percent)
+            case SeriesType.body_fat_percentage if provider == "apple":
+                return value * 100
+            # HealthKit walking metrics returned as 0-1 fraction, DB stores percent
+            # apple-only metrics, so no need to check if provider is apple
+            case (
+                SeriesType.walking_double_support_percentage
+                | SeriesType.walking_asymmetry_percentage
+                | SeriesType.walking_steadiness
+            ):
+                return value * 100
+            case _:
+                return value
+
     def _build_statistic_bundles(
         self,
         request: SDKSyncRequest,
@@ -127,15 +153,11 @@ class ImportService:
 
             if not series_type:
                 continue
-            # Convert meters -> centimeters for height (both HealthKit and Health Connect report meters)
-            # and ratio (0..1) -> percent for Apple body_fat_percentage (HealthKit HKUnit.percent()).
-            # Android Health Connect's BodyFatRecord.percentage is already in percent, so only scale
-            # body_fat_percentage for provider == "apple" — otherwise Google/Samsung values are stored
-            # ~100x too large.
-            if series_type == SeriesType.height or (
-                series_type == SeriesType.body_fat_percentage and provider == "apple"
-            ):
-                value = value * 100
+            value = self._normalize_unit(series_type, value, provider)
+
+            # Health Connect reports blood glucose in mmol/L; the series unit is mg/dL.
+            if series_type == SeriesType.blood_glucose and (rjson.unit or "").lower().startswith("mmol"):
+                value = value * MMOL_L_TO_MG_DL
 
             # Extract device info
             device_model, software_version, original_source_name = extract_device_info(rjson.source)
@@ -152,6 +174,7 @@ class ImportService:
                 zone_offset=rjson.zoneOffset,
                 value=value,
                 series_type=series_type,
+                is_daily_total=daily_total_flag(series_type, is_daily=False),
             )
 
             match series_type:
@@ -199,46 +222,44 @@ class ImportService:
             if value is None or stat.type is None:
                 continue
 
-            # series type conversion only happens for metrics that are not in EventRecordMetrics
             series_type = get_series_type_from_workout_statistic_type(stat.type)
-
             if series_type:
-                sample = TimeSeriesSampleCreate(
-                    id=uuid4(),
-                    external_id=None,
-                    user_id=user_uuid,
-                    source=source_name,
-                    device_model=device_model,
-                    software_version=software_version,
-                    provider=provider,
-                    recorded_at=end_date,
-                    zone_offset=zone_offset,
-                    value=value,
-                    series_type=series_type,
+                time_series_samples.append(
+                    TimeSeriesSampleCreate(
+                        id=uuid4(),
+                        external_id=None,
+                        user_id=user_uuid,
+                        source=source_name,
+                        device_model=device_model,
+                        software_version=software_version,
+                        provider=provider,
+                        recorded_at=end_date,
+                        zone_offset=zone_offset,
+                        value=value,
+                        series_type=series_type,
+                        is_daily_total=daily_total_flag(series_type, is_daily=False),
+                    )
                 )
-                time_series_samples.append(sample)
                 continue
 
-            # duration is not a part of EventRecordMetrics, however it is sent as a workout statistic
-            if stat.type in (WorkoutStatisticType.DURATION, WorkoutStatisticType.TOTAL_DURATION):
-                duration = float(value) / 1000 if stat.unit == "ms" else float(value)
-                continue
-
-            if stat.type in (
-                WorkoutStatisticType.ACTIVE_ENERGY_BURNED,
-                WorkoutStatisticType.BASAL_ENERGY_BURNED,
-                WorkoutStatisticType.CALORIES,
-                WorkoutStatisticType.TOTAL_CALORIES,
-            ):
-                stats_dict["energy_burned"] += value
-                continue
-
-            detail_field = get_detail_field_from_workout_statistic_type(stat.type)
-            if detail_field:
-                # Apple SDK may send fractional Decimals for integer fields (e.g. stepCount)
-                if detail_field in ("steps_count", "moving_time_seconds"):
-                    value = int(value)
-                stats_dict[detail_field] = value
+            match stat.type:
+                # duration is sent as a workout statistic but stored separately
+                case WorkoutStatisticType.DURATION | WorkoutStatisticType.TOTAL_DURATION:
+                    duration = float(value) / 1000 if stat.unit == "ms" else float(value)
+                case (
+                    WorkoutStatisticType.ACTIVE_ENERGY_BURNED
+                    | WorkoutStatisticType.BASAL_ENERGY_BURNED
+                    | WorkoutStatisticType.CALORIES
+                    | WorkoutStatisticType.TOTAL_CALORIES
+                ):
+                    stats_dict["energy_burned"] += value
+                case _:
+                    detail_field = get_detail_field_from_workout_statistic_type(stat.type)
+                    if detail_field:
+                        # Apple SDK may send fractional Decimals for integer fields (e.g. stepCount)
+                        if detail_field in ("steps_count", "moving_time_seconds"):
+                            value = int(value)
+                        stats_dict[detail_field] = value
 
         return EventRecordMetrics(**stats_dict), time_series_samples, duration
 
@@ -313,6 +334,7 @@ class ImportService:
         user_id: str,
         batch_id: str | None = None,
     ) -> UploadDataResponse:
+        provider = "unknown"
         try:
             # Parse content based on type
             if "multipart/form-data" in content_type:
@@ -331,12 +353,18 @@ class ImportService:
                 )
                 return UploadDataResponse(status_code=400, response="No valid data found", user_id=user_id)
 
-            # Extract incoming counts for logging
+            # Extract incoming counts (best-effort; invalid types must reach validation
+            # below rather than raising TypeError here)
             provider = data.get("provider", "unknown")
-            inner_data = data.get("data", {})
-            incoming_records = len(inner_data.get("records", []))
-            incoming_workouts = len(inner_data.get("workouts", []))
-            incoming_sleep = len(inner_data.get("sleep", []))
+            inner_data = data.get("data")
+            if not isinstance(inner_data, dict):
+                inner_data = {}
+            records = inner_data.get("records")
+            workouts = inner_data.get("workouts")
+            sleep = inner_data.get("sleep")
+            incoming_records = len(records) if isinstance(records, list) else 0
+            incoming_workouts = len(workouts) if isinstance(workouts, list) else 0
+            incoming_sleep = len(sleep) if isinstance(sleep, list) else 0
 
             # Load data and get saved counts
             saved_counts = self.load_data(db_session, data, user_id=user_id, batch_id=batch_id)
@@ -362,7 +390,50 @@ class ImportService:
                 sleep_saved=saved_counts["sleep_saved"],
             )
 
+        except ValidationError as e:
+            # Payload failed schema validation; report to Sentry with the field-level errors.
+            errors = e.errors()
+            first = errors[0] if errors else {}
+            # Drop `input` (raw record value — may contain health data/PII) and `url`
+            # before sending to Sentry; keep loc/msg/type. Preserve the 20-error cap.
+            safe_errors = [{k: v for k, v in err.items() if k not in ("input", "url")} for err in errors[:20]]
+            log_and_capture_error(
+                e,
+                self.log,
+                f"{provider} SDK payload failed validation for user {user_id}",
+                extra={
+                    "user_id": user_id,
+                    "batch_id": batch_id,
+                    "provider": provider,
+                    "error_count": len(errors),
+                    "errors": safe_errors,
+                },
+            )
+            log_structured(
+                self.log,
+                "warning",
+                f"{provider.capitalize()} SDK payload validation failed",
+                provider=f"{provider}",
+                action=f"{provider}_sdk_validation_failed",
+                batch_id=batch_id,
+                user_id=user_id,
+                error_count=len(errors),
+                first_error_loc=".".join(str(x) for x in first.get("loc", [])),
+                first_error_msg=first.get("msg"),
+            )
+            return UploadDataResponse(
+                status_code=400,
+                response=f"Validation failed: {first.get('msg', 'invalid payload')}",
+                user_id=user_id,
+            )
+
         except Exception as e:
+            log_and_capture_error(
+                e,
+                self.log,
+                f"Import failed for user {user_id}",
+                extra={"user_id": user_id, "batch_id": batch_id, "provider": provider},
+            )
             log_structured(
                 self.log,
                 "error",

@@ -81,7 +81,7 @@ function WorkoutRow({
   // Prepare HR chart data using utility function (display tz for x-axis labels)
   const hrChartData = useMemo(
     () => prepareHrChartData(hrData?.data, displayTz),
-    [hrData, displayTz],
+    [hrData, displayTz]
   );
 
   // Get detail fields using utility function
@@ -112,7 +112,9 @@ function WorkoutRow({
           <div className="w-32 flex-shrink-0">
             <p className="text-sm font-medium text-foreground">{style.label}</p>
             <p className="text-xs text-muted-foreground">
-              {workoutDate ? formatInTz(workoutDate, displayTz, 'MMM d, yyyy') : '-'}
+              {workoutDate
+                ? formatInTz(workoutDate, displayTz, 'MMM d, yyyy')
+                : '-'}
             </p>
             {workout.source?.provider && (
               <SourceBadge

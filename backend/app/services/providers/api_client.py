@@ -72,6 +72,7 @@ def make_authenticated_request(
     headers: dict[str, str] | None = None,
     json_data: dict[str, Any] | None = None,
     expect_json: bool = True,
+    http2: bool = False,
 ) -> Any:
     """Make authenticated request to provider API.
 
@@ -91,6 +92,9 @@ def make_authenticated_request(
         json_data: JSON body for POST/PUT requests
         expect_json: Whether to parse response as JSON (default True).
             Set to False for endpoints that return empty bodies (e.g., 202 Accepted).
+        http2: Enable HTTP/2 for this request (default False). Requires the h2
+            package (installed via httpx[http2]).  Use for providers that require
+            HTTP/2, e.g. Sensor Bio.  Other providers are unaffected.
 
     Returns:
         Any: API response JSON, or dict with status_code if expect_json=False
@@ -114,14 +118,15 @@ def make_authenticated_request(
 
     for attempt in range(MAX_RETRIES + 1):
         try:
-            response = httpx.request(
-                method=method,
-                url=url,
-                headers=request_headers,
-                params=params or {},
-                json=json_data,
-                timeout=30.0,
-            )
+            with httpx.Client(http2=http2) as client:
+                response = client.request(
+                    method=method,
+                    url=url,
+                    headers=request_headers,
+                    params=params or {},
+                    json=json_data,
+                    timeout=30.0,
+                )
 
             # Handle 429 rate limiting with retry
             if response.status_code == 429:
@@ -241,3 +246,41 @@ def make_authenticated_request(
         status_code=500,
         detail=f"Failed to complete request to {provider_name.capitalize()} after retries",
     )
+
+
+def download_binary_content(
+    db: DbSession,
+    user_id: UUID,
+    connection_repo: UserConnectionRepository,
+    oauth: BaseOAuthTemplate,
+    provider_name: str,
+    url: str,
+) -> bytes:
+    """Download binary content from a full URL using OAuth Bearer authentication.
+
+    Used for endpoints that return binary data (e.g. Garmin activityFiles FIT download).
+    The URL may contain additional auth params (e.g. token=...) alongside the Bearer header.
+    Retries up to MAX_RETRIES times on 429 with exponential backoff.
+    """
+    access_token = _get_valid_token(db, user_id, provider_name, connection_repo, oauth)
+    headers = {"Authorization": f"Bearer {access_token}"}
+
+    for attempt in range(MAX_RETRIES + 1):
+        response = httpx.get(url, headers=headers, timeout=30.0, follow_redirects=True)
+        if response.status_code == 429 and attempt < MAX_RETRIES:
+            backoff_delay = RETRY_BASE_DELAY * (2**attempt)
+            log_structured(
+                logger,
+                "warning",
+                "Rate limited (429) on binary download, retrying",
+                provider_name=provider_name,
+                attempt=attempt + 1,
+                max_retries=MAX_RETRIES,
+                backoff_delay=backoff_delay,
+            )
+            time.sleep(backoff_delay)
+            continue
+        response.raise_for_status()
+        return response.content
+
+    raise HTTPException(status_code=500, detail=f"Failed to download binary content from {provider_name}")
