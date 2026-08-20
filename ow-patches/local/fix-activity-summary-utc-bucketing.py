@@ -101,7 +101,7 @@ def get_daily_activity_aggregates(
     Aggregates steps, energy, heart rate stats by date for a user.
 
     Returns list of dicts with keys:
-    - activity_date, provider, source, device_model
+    - activity_date, provider, source, device_model, device_type
     - steps_sum, active_energy_sum, basal_energy_sum
     - hr_avg, hr_max, hr_min
     - distance_sum, flights_climbed_sum, active_time_minutes
@@ -160,6 +160,11 @@ def get_daily_activity_aggregates(
             DataSource.provider.label("provider"),
             DataSource.source.label("source"),
             DataSource.device_model.label("device_model"),
+            # device_type is functionally dependent on the three columns above
+            # (uq_data_source_identity is unique per user on
+            # provider/device_model/source), so adding it to the GROUP BY cannot
+            # change the number of groups. Added upstream in #1414.
+            DataSource.device_type.label("device_type"),
             # Steps - prefer daily total, else sum samples
             prefer_daily_sum(steps_id).label("steps_sum"),
             # Active energy - prefer daily total, else sum samples
@@ -198,6 +203,7 @@ def get_daily_activity_aggregates(
             DataSource.provider,
             DataSource.source,
             DataSource.device_model,
+            DataSource.device_type,
         )
         .order_by(asc(local_date))
         .all()
@@ -212,6 +218,7 @@ def get_daily_activity_aggregates(
                 "provider": row.provider,
                 "source": row.source,
                 "device_model": row.device_model,
+                "device_type": row.device_type,
                 "steps_sum": int(row.steps_sum) if row.steps_sum else 0,
                 "active_energy_sum": float(row.active_energy_sum) if row.active_energy_sum else 0.0,
                 "basal_energy_sum": float(row.basal_energy_sum) if row.basal_energy_sum else 0.0,

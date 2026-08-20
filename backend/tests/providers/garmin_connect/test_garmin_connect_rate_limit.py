@@ -8,6 +8,7 @@ attempts per sync run and escalating a soft rate-limit into an IP-level block.
 from __future__ import annotations
 
 import importlib.util
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -26,21 +27,34 @@ _PATCH_PATH = (
     Path(__file__).resolve().parents[3].parent / "ow-patches" / "local" / "fix-garmin-connect-rate-limit-backoff.py"
 )
 
+# apply.py loads each patch as `_ow_patches_<id with dashes as underscores>`.
+_PATCH_MODULE_NAME = "_ow_patches_fix_garmin_connect_rate_limit_backoff"
+
 
 def _load_patch() -> Any:
-    spec = importlib.util.spec_from_file_location("_test_gc_rate_limit_patch", _PATCH_PATH)
+    """Fallback loader for running this file against an unpatched checkout."""
+    spec = importlib.util.spec_from_file_location(_PATCH_MODULE_NAME, _PATCH_PATH)
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
+    sys.modules[_PATCH_MODULE_NAME] = module
     spec.loader.exec_module(module)
+    module.install()
     return module
 
 
 @pytest.fixture(scope="module")
 def patch_module() -> Any:
-    module = _load_patch()
-    module.install()
-    return module
+    """Return the ALREADY-INSTALLED patch module.
+
+    Deliberately does not load a second copy. Doing so registered the patch
+    under a different module name and re-installed it over the real one, which
+    (a) polluted `GarminConnectClient.__module__` for the whole session and broke
+    tests/test_ow_patches_installed.py, and (b) meant these tests passed even
+    when apply.py never installed the patch at all — which is exactly how it
+    shipped inert.
+    """
+    return sys.modules.get(_PATCH_MODULE_NAME) or _load_patch()
 
 
 @pytest.fixture

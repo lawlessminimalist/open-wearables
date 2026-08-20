@@ -122,6 +122,16 @@ def _compose_sleep_summaries() -> None:
     stages_module = _patch("fix-sleep-stages-missing") if enabled_stages else None
     tz_module = _patch("fix-sleep-timezone") if enabled_tz else None
 
+    if enabled_stages:
+        # fix-sleep-stages-missing has TWO halves: the ensure_stages_object
+        # decorator applied below, and a wholesale replacement of
+        # Ultrahuman247Data.normalize_sleep (capitalisation / key-name tolerance).
+        # Loading the module via _patch() does not install the latter — install()
+        # must be called explicitly, exactly as _compose_activity_summaries does
+        # for fix-calories-total-mislabelled. Without this the Ultrahuman half was
+        # silently inert while PATCHES.md claimed it was live.
+        stages_module.install()
+
     # NOTE: we deliberately fetch through sys.modules. `app.services` re-exports
     # the `summaries_service` singleton with `from .summaries_service import …`,
     # which shadows the submodule attribute on `app.services`. Using sys.modules
@@ -213,6 +223,7 @@ _STANDALONE_PATCHES = (
     "fix-garmin-connect-activity-hr-samples",
     "fix-sleep-summary-utc-bucketing",
     "fix-health-score-source-priority",
+    "fix-garmin-connect-rate-limit-backoff",
 )
 
 # Patches whose runtime behavior is composed (no direct install call) live in
