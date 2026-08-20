@@ -138,6 +138,17 @@ _RATE_LIMIT_MARKERS = (
 # which matched "403" and "login" and therefore matched Cloudflare rejections.
 _AUTH_MARKERS = ("token", "unauthorized", "401", "expired", "session")
 
+# Garmin locks an account after sustained failed logins. It surfaces as
+# ACCOUNT_LOCKED / generalLoginAccountLocked in the strategy payload, and
+# thereafter every login returns a misleading "401 Unauthorized (Invalid
+# Username or Password)". Retrying is worse than useless: continued attempts
+# keep the lock alive. Treat it as a hard stop with a cooldown.
+_ACCOUNT_LOCKED_MARKERS = (
+    "account_locked",
+    "accountlocked",
+    "generalloginaccountlocked",
+)
+
 _RETRY_AFTER_RE = re.compile(r"retry[-\s]?after[\"':=\s]+(\d+)", re.IGNORECASE)
 
 
@@ -149,6 +160,11 @@ def _sleep(seconds: float) -> None:
 def _is_rate_limited(message: str) -> bool:
     low = message.lower()
     return any(marker in low for marker in _RATE_LIMIT_MARKERS)
+
+
+def _is_account_locked(message: str) -> bool:
+    low = message.lower()
+    return any(marker in low for marker in _ACCOUNT_LOCKED_MARKERS)
 
 
 def _is_auth_error(message: str) -> bool:
@@ -265,6 +281,13 @@ def _login(self, api: Any) -> None:
         api.login()
     except Exception as exc:
         message = str(exc)
+        if _is_account_locked(message):
+            cooldown = _record_rate_limit(_module_logger())
+            self._blocked_until = time.monotonic() + cooldown
+            raise GarminConnectClientError(
+                f"Garmin Connect account is LOCKED — stop retrying and unlock it at "
+                f"garmin.com (password reset). Backing off {cooldown}s: {message}"
+            ) from exc
         if _is_rate_limited(message):
             cooldown = _record_rate_limit(_module_logger())
             self._blocked_until = time.monotonic() + cooldown
@@ -395,6 +418,7 @@ def load_and_save_all(
     from datetime import timedelta  # noqa: PLC0415
 
     from app.services.providers.garmin_connect.client import (  # noqa: PLC0415
+        GarminConnectClientError,
         GarminConnectRateLimitError,
     )
 
@@ -441,23 +465,31 @@ def load_and_save_all(
         "hrv": lambda d: self.save_hrv_for_date(db, user_id, d),
     }
 
-    rate_limit_exc: Exception | None = None
+    # Any GarminConnectClientError is unrecoverable for the rest of this run:
+    # a rate limit, a locked account, or wrong credentials will all still be true
+    # on the next (date, data_type) pair. Only genuinely per-day errors continue.
+    fatal_exc: Exception | None = None
 
     for cdate in self.client.iter_dates(start_date, end_date):
-        if rate_limit_exc is not None:
+        if fatal_exc is not None:
             break
         for data_type, fn in per_day_tasks.items():
             try:
                 results[data_type] += fn(cdate)
-            except GarminConnectRateLimitError as exc:
+            except GarminConnectClientError as exc:
                 # Abort the whole run. Continuing would issue one more login
-                # storm per remaining (date, data_type) pair.
-                rate_limit_exc = exc
+                # storm per remaining (date, data_type) pair — which is how a
+                # soft rate-limit became an IP block and then a locked account.
+                fatal_exc = exc
+                rate_limited = isinstance(exc, GarminConnectRateLimitError)
                 log_structured(
                     self.logger,
                     "error",
-                    "Aborting Garmin Connect 24/7 sync: rate limited",
-                    action="garmin_connect_sync_aborted_rate_limit",
+                    "Aborting Garmin Connect 24/7 sync: "
+                    + ("rate limited" if rate_limited else "authentication failed"),
+                    action="garmin_connect_sync_aborted_rate_limit"
+                    if rate_limited
+                    else "garmin_connect_sync_aborted_auth",
                     data_type=data_type,
                     date=str(cdate),
                     error=str(exc),
@@ -477,14 +509,14 @@ def load_and_save_all(
                     user_id=str(user_id),
                 )
 
-    if rate_limit_exc is not None:
+    if fatal_exc is not None:
         # Surface as a failure so the sync run isn't recorded as a successful
         # no-op. Records already persisted stay persisted.
-        raise rate_limit_exc
+        raise fatal_exc
 
     try:
         results["body_composition"] = self.save_body_composition(db, user_id, start_date, end_date)
-    except GarminConnectRateLimitError as exc:
+    except GarminConnectClientError as exc:
         results["body_composition"] = 0
         raise exc
     except Exception as exc:
