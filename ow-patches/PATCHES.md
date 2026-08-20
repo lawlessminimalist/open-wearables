@@ -136,6 +136,7 @@ kubectl -n open-wearables exec deploy/app -- ls /root_project/ow-patches/apply.p
 - rebased_note:              Rebased 2026-07-26 onto merged upstream. Was a wholesale-replace of Garmin247Data._build_dailies_samples + get_activity_summaries, which shadowed #1232 (is_daily_total) and #1242 (active_time_minutes). Now: (1) Garmin OAuth basal is a one-line STRUCTURAL add to garmin/coverage.py::DAILIES_SERIES (upstream's own _build_dailies_samples persists it with the correct daily_total_flag — no shadow); (2) get_activity_summaries is a DECORATOR (apply_calories_fix in apply.py) that reconstructs basal = total - active from upstream's output and nulls total unless both present, inheriting #1242's active_time_minutes instead of shadowing it; (3) garmin_connect override retained (fork-only provider) and now stamps is_daily_total via daily_total_flag.
 - retire_when:               Garmin daily-stats normalization persists basal energy AND ActivitySummary.total_calories_kcal is null when basal is missing (not equal to active_calories_kcal) AND ActivitySummary.basal_calories_kcal is populated.
 - upstream_equivalent_check: basal_calories_kcal
+- rebased_note_2:            2026-08-20: the `GarminConnect247Data.save_daily_stats_for_date` override was REMOVED from this patch. garmin_connect is a fork-only provider whose source we own outright, so persisting bmrKilocalories belongs in data_247.py directly — and keeping it as a runtime patch actively shadowed later edits to the very file it patched: new fields added to the real save_daily_stats_for_date (floorsAscended -> flights_climbed, intensity minutes -> exercise_time) silently never ran, with no error and no failing test. Patching your own source buys every shadowing hazard and none of the upstream-conflict benefit. This patch is now decorator-only (apply_calories_fix over get_activity_summaries) plus the structural garmin/coverage.py DAILIES_SERIES basal mapping; install() is a documented no-op.
 - local_patch_file:          ow-patches/local/fix-calories-total-mislabelled.py
 
 ---
@@ -304,6 +305,25 @@ kubectl -n open-wearables exec deploy/app -- ls /root_project/ow-patches/apply.p
 - rebased_note:              2026-08-20: this patch was SILENTLY INERT on first landing. Its id was added to PATCHES_ENABLED but not to `_STANDALONE_PATCHES` in apply.py, and apply_patches() iterates the tuple, not the flag dict — so it never installed. Its own tests passed because the fixture called install() directly. Fixed by adding it to `_STANDALONE_PATCHES`; the test fixture now uses the already-installed module instead of loading a second copy. Guarded by backend/tests/test_ow_patches_installed.py::TestRegistryConsistency.
 - rebased_note_2:            2026-08-20 (second pass): the original fix only aborted the run on GarminConnectRateLimitError. Real-world escalation went 429 -> IP block -> ACCOUNT_LOCKED, and after the lock Garmin returns a misleading `401 Unauthorized (Invalid Username or Password)` — correctly classified as an AUTH failure, so the per-day loop swallowed it and kept re-attempting login, keeping the lock alive. Now (a) `_is_account_locked` recognises ACCOUNT_LOCKED / generalLoginAccountLocked and applies the same escalating cooldown as a rate limit, raising an error that names the remedy (password reset at garmin.com), and (b) load_and_save_all aborts on ANY GarminConnectClientError, not just the rate-limit subclass — a credential problem will still be true on the next (date, data_type) pair. Genuinely per-day errors are still swallowed.
 - local_patch_file:          ow-patches/local/fix-garmin-connect-rate-limit-backoff.py
+
+---
+
+## fix-provider-prefix-shadowing
+
+- patch_id:                  fix-provider-prefix-shadowing
+- status:                    upstream_candidate
+- replacement_kind:          standalone
+- upstream_url:              https://github.com/the-momentum/open-wearables
+- upstream_issue_or_pr:      null
+- file:                      backend/app/schemas/enums/provider.py
+- symbol:                    ProviderName.from_source_string
+- what_we_changed:           Match provider values LONGEST-FIRST instead of in enum declaration order, and normalise ` ` / `-` to `_` before matching. Upstream iterates `for provider in cls` and returns the first value that is a substring of the source, so `GARMIN = "garmin"` (declared line 9) always beat `GARMIN_CONNECT = "garmin_connect"` (line 10) — `"garmin" in "garmin_connect"` is True, making GARMIN_CONNECT unreachable through this function. Generic flaw: any provider value that is a prefix of another shadows it.
+- why:                       The result is PERSISTED, not just displayed. `infer_provider_from_source` delegates here and runs on the write path in event_record_repository.py:57/:190 and data_point_series_repository.py:131/:251, so every data_source row for garmin_connect stored `provider='garmin'`. That surfaced as `provider: "garmin"` alongside `source: "garmin_connect"` on the summaries endpoints, and — worse — provider-priority resolution (summaries_service.py:119, plus fix-health-score-source-priority) ranked garmin_connect in GARMIN's slot, so the wrong source could win a de-duplication against Ultrahuman for the same night.
+- structural_note:           Upstream's own test `backend/tests/schemas/test_provider_name.py` asserts `("garmin_connect", ProviderName.GARMIN)` — it codifies the bug. That case is changed to GARMIN_CONNECT with an inline FORK DIVERGENCE comment. This is a STRUCTURAL edit to an upstream test file and will surface as a git conflict on future merges; that is intended, so the divergence gets re-examined rather than silently reverted.
+- migration:                 backend/migrations/versions/2026_08_20_0600-c4d5e6f7a8b9_fix_garmin_connect_provider_mislabel.py repairs rows already written. Scoped to rows whose `source` identifies garmin_connect, so official-garmin rows are untouched, and skips rows that would collide with uq_data_source_identity.
+- retire_when:               ProviderName.from_source_string resolves "garmin_connect" to ProviderName.GARMIN_CONNECT. Marker: any longest-match / sorted-by-length logic or an explicit alias table inside from_source_string.
+- upstream_equivalent_check: backend/app/schemas/enums/provider.py::key=lambda
+- local_patch_file:          ow-patches/local/fix-provider-prefix-shadowing.py
 
 ---
 

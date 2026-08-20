@@ -28,6 +28,8 @@ class GarminConnectClient:
 
     def __init__(self) -> None:
         self._api: Any = None  # garminconnect.Garmin instance
+        self._device_model: str | None = None
+        self._device_model_cached: bool = False
 
     def _get_credentials(self) -> tuple[str, str]:
         email = settings.garmin_connect_email
@@ -169,6 +171,40 @@ class GarminConnectClient:
         """Return HRV status data for a calendar date."""
         result = self._call_with_reauth("get_hrv_data", cdate.strftime("%Y-%m-%d"))
         return result if isinstance(result, dict) else {}
+
+    def get_last_used_device_model(self) -> str | None:
+        """Return the display name of the most recently used Garmin device.
+
+        Cached on the instance: the strategy shares one client across the
+        workouts and 24/7 handlers, so a whole sync run costs a single extra
+        request rather than one per date. That distinction matters — the per-day
+        loop is what got this provider IP rate-limited.
+
+        The 24/7 endpoints do not report which device produced the data, so
+        without this every 24/7 record persisted device_model=None, leaving
+        device_type UNKNOWN and the UI rendering its "unknown device" fallback
+        on sleep, HRV and body-metrics rows (workouts were unaffected because
+        activities carry deviceName directly).
+        """
+        if self._device_model_cached:
+            return self._device_model
+        self._device_model_cached = True
+        try:
+            info = self._call_with_reauth("get_device_last_used")
+        except Exception as exc:
+            log_structured(
+                logger,
+                "warning",
+                "Could not resolve Garmin device; 24/7 records will have no device_model",
+                provider=_PROVIDER,
+                error=str(exc),
+            )
+            return None
+        if not isinstance(info, dict):
+            return None
+        # Garmin has used both keys across firmware/API generations.
+        self._device_model = info.get("lastUsedDeviceName") or info.get("displayName") or None
+        return self._device_model
 
     def iter_dates(self, start_date: date, end_date: date) -> list[date]:
         """Return list of calendar dates from start_date through end_date."""

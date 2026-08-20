@@ -16,7 +16,13 @@ class TestProviderNameFromSourceString:
             ("Apple Health", ProviderName.APPLE),
             ("APPLE_WATCH", ProviderName.APPLE),
             # Garmin variations
-            ("garmin_connect", ProviderName.GARMIN),
+            # FORK DIVERGENCE (ow-patch fix-provider-prefix-shadowing): upstream
+            # asserts GARMIN here, because it matches enum values in declaration
+            # order and "garmin" is declared before "garmin_connect" — so the
+            # more specific provider was unreachable. The fork matches the
+            # longest value first, which makes GARMIN_CONNECT resolvable. This
+            # is a deliberate behaviour change, not a broken test.
+            ("garmin_connect", ProviderName.GARMIN_CONNECT),
             ("Garmin Fenix 7", ProviderName.GARMIN),
             ("GARMIN", ProviderName.GARMIN),
             # Polar variations

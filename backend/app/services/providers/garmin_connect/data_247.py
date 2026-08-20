@@ -12,7 +12,7 @@ from app.constants.sleep import SleepStageType
 from app.database import DbSession
 from app.models import EventRecord
 from app.repositories import EventRecordRepository, UserConnectionRepository
-from app.schemas.enums import SeriesType
+from app.schemas.enums import SeriesType, daily_total_flag
 from app.schemas.model_crud.activities import (
     EventRecordCreate,
     EventRecordDetailCreate,
@@ -150,7 +150,11 @@ class GarminConnect247Data(Base247DataTemplate):
             category="sleep",
             type="sleep_session",
             source_name="Garmin Connect",
-            device_model=None,
+            # The 24/7 endpoints don't say which device produced the data, so ask
+            # the account once per sync (cached on the client). Without a model,
+            # infer_device_type_from_model returns UNKNOWN and the UI shows its
+            # unknown-device fallback on every sleep / body-metrics row.
+            device_model=self.client.get_last_used_device_model(),
             duration_seconds=duration_s,
             start_datetime=start_dt,
             end_datetime=end_dt,
@@ -171,7 +175,7 @@ class GarminConnect247Data(Base247DataTemplate):
 
         try:
             event_record_service.create_or_merge_sleep(db, user_id, record, detail, settings.sleep_end_gap_minutes)
-            return 1
+            saved = 1
         except Exception as exc:
             log_structured(
                 self.logger,
@@ -182,6 +186,51 @@ class GarminConnect247Data(Base247DataTemplate):
                 user_id=str(user_id),
             )
             return 0
+
+        saved += self._save_sleep_physiology(db, user_id, dto, start_dt, end_dt)
+        return saved
+
+    def _save_sleep_physiology(
+        self, db: DbSession, user_id: UUID, dto: dict, start_dt: datetime, end_dt: datetime
+    ) -> int:
+        """Persist the nightly physiology averages carried in the sleep payload.
+
+        These arrive in the same ``get_sleep_data`` response we have already paid
+        for, so this costs no additional authenticated request — which matters,
+        because the per-day sync loop is what got this provider IP rate-limited.
+        Emitted once per night at the sleep midpoint so they cannot collide with
+        each other on the (data_source, series_type, recorded_at) upsert key.
+        """
+        midpoint = start_dt + (end_dt - start_dt) / 2
+
+        mapping: list[tuple[str, SeriesType]] = [
+            ("avgSpO2", SeriesType.oxygen_saturation),
+            ("avgRespirationValue", SeriesType.respiratory_rate),
+            # Garmin's own overnight HRV average. Independent of get_hrv_data, so
+            # HRV survives even when that endpoint returns nothing for a date.
+            ("avgSleepHRV", SeriesType.heart_rate_variability_rmssd),
+        ]
+
+        samples: list[TimeSeriesSampleCreate] = []
+        for field, series_type in mapping:
+            value = dto.get(field)
+            if value is None:
+                continue
+            with suppress(Exception):
+                samples.append(
+                    TimeSeriesSampleCreate(
+                        id=uuid4(),
+                        user_id=user_id,
+                        source=self.provider_name,
+                        recorded_at=midpoint,
+                        value=Decimal(str(value)),
+                        series_type=series_type,
+                    )
+                )
+
+        if samples:
+            timeseries_service.bulk_create_samples(db, samples)
+        return len(samples)
 
     # -------------------------------------------------------------------------
     # Heart Rate
@@ -267,10 +316,26 @@ class GarminConnect247Data(Base247DataTemplate):
         metric_map: list[tuple[str, SeriesType]] = [
             ("totalSteps", SeriesType.steps),
             ("activeKilocalories", SeriesType.energy),
+            # Basal metabolic rate. The official garmin provider persists this via
+            # DAILIES_SERIES; get_stats has carried it all along and we discarded it,
+            # which is why ActivitySummary.total_calories_kcal had no basal half.
+            ("bmrKilocalories", SeriesType.basal_energy),
             ("totalDistanceMeters", SeriesType.distance_walking_running),
+            ("floorsAscended", SeriesType.flights_climbed),
             ("averageStressLevel", SeriesType.garmin_stress_level),
             ("restingHeartRate", SeriesType.resting_heart_rate),
         ]
+
+        # Garmin reports intensity minutes split by band; exercise_time is the
+        # combined figure, so sum them rather than emitting two samples at the
+        # same timestamp (the upsert key is data_source_id + series_type +
+        # recorded_at, so the second would be silently dropped).
+        intensity = sum(
+            v for k in ("moderateIntensityMinutes", "vigorousIntensityMinutes") if (v := raw.get(k)) is not None
+        )
+        if intensity:
+            metric_map.append(("_intensity_minutes_total", SeriesType.exercise_time))
+            raw = {**raw, "_intensity_minutes_total": intensity}
 
         for field, series_type in metric_map:
             value = raw.get(field)
@@ -285,6 +350,11 @@ class GarminConnect247Data(Base247DataTemplate):
                         recorded_at=midnight,
                         value=Decimal(str(value)),
                         series_type=series_type,
+                        # These are whole-day figures, not intraday samples. Without
+                        # this they default to None, which aggregation treats as
+                        # summable — so a daily total double-counts against another
+                        # provider and mis-aggregates over multi-day ranges.
+                        is_daily_total=daily_total_flag(series_type, is_daily=True),
                     )
                 )
             except Exception as exc:
@@ -411,51 +481,67 @@ class GarminConnect247Data(Base247DataTemplate):
     # -------------------------------------------------------------------------
 
     def save_hrv_for_date(self, db: DbSession, user_id: UUID, cdate: date) -> int:
-        """Fetch and save HRV data for a single date."""
+        """Fetch and save HRV data for a single date.
+
+        The nightly average key is ``lastNightAvg``. This previously read
+        ``lastNight``, which does not exist in the payload, so the guard below
+        returned 0 on every date and this provider never wrote a single HRV
+        sample — while still spending one authenticated request per day inside
+        the rate-limited sync loop.
+
+        ``weeklyAvg`` is deliberately NOT persisted as SDNN: it is a rolling
+        average of the same RMSSD-based metric, not an SDNN measurement, and
+        writing it to heart_rate_variability_sdnn mislabelled the data.
+        """
         raw = self.client.get_hrv_data(cdate)
         hrv_data: dict = raw.get("hrv") or {}
         summary: dict = hrv_data.get("hrvSummary") or {}
-
-        last_night = summary.get("lastNight")
-        if last_night is None:
-            return 0
-
         midnight = datetime(cdate.year, cdate.month, cdate.day, tzinfo=timezone.utc)
 
         samples: list[TimeSeriesSampleCreate] = []
-        try:
-            samples.append(
-                TimeSeriesSampleCreate(
-                    id=uuid4(),
-                    user_id=user_id,
-                    source=self.provider_name,
-                    recorded_at=midnight,
-                    value=Decimal(str(last_night)),
-                    series_type=SeriesType.heart_rate_variability_rmssd,
-                )
-            )
-        except Exception as exc:
-            log_structured(
-                self.logger,
-                "warning",
-                "Failed to build HRV sample",
-                action="garmin_connect_hrv_error",
-                error=str(exc),
-                user_id=str(user_id),
-            )
-            return 0
 
-        weekly_avg = summary.get("weeklyAvg")
-        if weekly_avg is not None:
-            with suppress(Exception):
+        last_night = summary.get("lastNightAvg")
+        if last_night is not None:
+            try:
                 samples.append(
                     TimeSeriesSampleCreate(
                         id=uuid4(),
                         user_id=user_id,
                         source=self.provider_name,
                         recorded_at=midnight,
-                        value=Decimal(str(weekly_avg)),
-                        series_type=SeriesType.heart_rate_variability_sdnn,
+                        value=Decimal(str(last_night)),
+                        series_type=SeriesType.heart_rate_variability_rmssd,
+                    )
+                )
+            except Exception as exc:
+                log_structured(
+                    self.logger,
+                    "warning",
+                    "Failed to build HRV sample",
+                    action="garmin_connect_hrv_error",
+                    error=str(exc),
+                    user_id=str(user_id),
+                )
+
+        # Per-reading intraday RMSSD (roughly 5-minute cadence overnight). Already
+        # in the response we just paid for, so this costs no extra request.
+        for reading in hrv_data.get("hrvReadings") or []:
+            value = reading.get("hrvValue")
+            ts = reading.get("readingTimeGMT") or reading.get("readingTimeLocal")
+            if value is None or not ts:
+                continue
+            with suppress(Exception):
+                recorded_at = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+                if recorded_at.tzinfo is None:
+                    recorded_at = recorded_at.replace(tzinfo=timezone.utc)
+                samples.append(
+                    TimeSeriesSampleCreate(
+                        id=uuid4(),
+                        user_id=user_id,
+                        source=self.provider_name,
+                        recorded_at=recorded_at,
+                        value=Decimal(str(value)),
+                        series_type=SeriesType.heart_rate_variability_rmssd,
                     )
                 )
 
