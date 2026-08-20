@@ -1,7 +1,8 @@
 """Garmin Connect provider strategy (credential-based, no OAuth)."""
 
-from app.services.providers.base_strategy import BaseProviderStrategy, ProviderCapabilities
+from app.services.providers.base_strategy import BaseProviderStrategy, ProviderCapabilities, ProviderCoverage
 from app.services.providers.garmin_connect.client import GarminConnectClient
+from app.services.providers.garmin_connect.coverage import SLEEP_FIELDS, TIMESERIES, WORKOUT_FIELDS
 from app.services.providers.garmin_connect.data_247 import GarminConnect247Data
 from app.services.providers.garmin_connect.workouts import GarminConnectWorkouts
 
@@ -50,6 +51,14 @@ class GarminConnectStrategy(BaseProviderStrategy):
     def api_base_url(self) -> str:
         # garminconnect manages URLs internally; this is informational only
         return "https://connect.garmin.com"
+
+    @property
+    def coverage(self) -> ProviderCoverage:
+        return ProviderCoverage(
+            timeseries=TIMESERIES,
+            workout_fields=WORKOUT_FIELDS,
+            sleep_fields=SLEEP_FIELDS,
+        )
 
     @property
     def capabilities(self) -> ProviderCapabilities:

@@ -51,6 +51,7 @@ PATCHES_ENABLED: dict[str, bool] = {
     "fix-sleep-summary-utc-bucketing": True,
     "fix-health-score-source-priority": True,
     "fix-garmin-connect-rate-limit-backoff": True,
+    "fix-provider-prefix-shadowing": True,
 }
 
 
@@ -224,6 +225,7 @@ _STANDALONE_PATCHES = (
     "fix-sleep-summary-utc-bucketing",
     "fix-health-score-source-priority",
     "fix-garmin-connect-rate-limit-backoff",
+    "fix-provider-prefix-shadowing",
 )
 
 # Patches whose runtime behavior is composed (no direct install call) live in

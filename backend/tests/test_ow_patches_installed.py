@@ -47,11 +47,12 @@ _EXPECTED_PATCHED: list[tuple[str, str, str]] = [
         "fix-spo2-respiratory-missing",
     ),
     # --- garmin_connect (fork-only provider) ---
-    (
-        "app.services.providers.garmin_connect.data_247",
-        "GarminConnect247Data.save_daily_stats_for_date",
-        "fix-calories-total-mislabelled (garmin_connect override)",
-    ),
+    # NOTE: save_daily_stats_for_date is deliberately NOT in this list. It used
+    # to be replaced by fix-calories-total-mislabelled, but that override was
+    # removed — garmin_connect is fork-only source we own, so the fix lives in
+    # data_247.py directly. The patch shadowed later edits to the same file,
+    # silently dropping newly-added fields. Asserting it is patched would now
+    # be asserting the bug.
     (
         "app.services.providers.garmin_connect.data_247",
         "GarminConnect247Data.load_and_save_all",

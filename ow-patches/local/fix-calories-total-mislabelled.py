@@ -32,75 +32,8 @@ schema in source (structural). When this patch is disabled, upstream's behaviour
 returns (total = active + (basal or 0); basal_calories_kcal stays null).
 """
 
-from datetime import date, datetime, timezone
-from decimal import Decimal
-from uuid import UUID, uuid4
 
-from app.database import DbSession
-from app.schemas.enums import SeriesType, daily_total_flag
-from app.schemas.model_crud.activities import TimeSeriesSampleCreate
 from app.schemas.responses.activity import ActivitySummary
-from app.utils.structured_logging import log_structured
-
-# ---------------------------------------------------------------------------
-# Garmin Connect (fork-only provider) — replaces save_daily_stats_for_date
-# ---------------------------------------------------------------------------
-
-
-def garmin_connect_save_daily_stats_for_date(self, db: DbSession, user_id: UUID, cdate: date) -> int:
-    """Fetch and save daily stats (steps, energy, basal energy, distance) for one date."""
-    from app.services.timeseries_service import timeseries_service  # noqa: PLC0415
-
-    raw = self.client.get_stats(cdate)
-    if not raw:
-        return 0
-
-    midnight = datetime(cdate.year, cdate.month, cdate.day, tzinfo=timezone.utc)
-    samples: list[TimeSeriesSampleCreate] = []
-
-    metric_map: list[tuple[str, SeriesType]] = [
-        ("totalSteps", SeriesType.steps),
-        ("activeKilocalories", SeriesType.energy),
-        ("bmrKilocalories", SeriesType.basal_energy),
-        ("totalDistanceMeters", SeriesType.distance_walking_running),
-        ("averageStressLevel", SeriesType.garmin_stress_level),
-        ("restingHeartRate", SeriesType.resting_heart_rate),
-    ]
-
-    for field, series_type in metric_map:
-        value = raw.get(field)
-        if value is None:
-            continue
-        try:
-            samples.append(
-                TimeSeriesSampleCreate(
-                    id=uuid4(),
-                    user_id=user_id,
-                    source=self.provider_name,
-                    recorded_at=midnight,
-                    value=Decimal(str(value)),
-                    series_type=series_type,
-                    # These are provider-reported daily totals (one sample/day);
-                    # flag them so the post-#1232 prefer_daily_sum aggregator
-                    # de-duplicates daily-total vs intraday correctly.
-                    is_daily_total=daily_total_flag(series_type, is_daily=True),
-                )
-            )
-        except Exception as exc:
-            log_structured(
-                self.logger,
-                "warning",
-                "Failed to build daily stat sample",
-                action="garmin_connect_daily_stat_error",
-                field=field,
-                error=str(exc),
-                user_id=str(user_id),
-            )
-
-    if samples:
-        timeseries_service.bulk_create_samples(db, samples)
-    return len(samples)
-
 
 # ---------------------------------------------------------------------------
 # SummariesService.get_activity_summaries — DECORATOR (post-processor)
@@ -136,14 +69,20 @@ def apply_calories_fix(summary: ActivitySummary) -> None:
 
 
 def install() -> None:
-    """Install the Garmin Connect daily-stats override (persists basal energy).
+    """No-op: this patch is decorator-only now.
 
-    The Garmin OAuth basal persistence is handled structurally by adding
-    ("bmr_calories", SeriesType.basal_energy) to garmin/coverage.py::DAILIES_SERIES
-    — upstream's own _build_dailies_samples then persists it (no shadow). The
+    The Garmin OAuth basal persistence is structural — ("bmr_calories",
+    SeriesType.basal_energy) added to garmin/coverage.py::DAILIES_SERIES, which
+    upstream's own _build_dailies_samples then persists (no shadow). The
     get_activity_summaries calorie post-processing is applied as a decorator by
-    apply.py::_compose_activity_summaries (apply_calories_fix), not here.
-    """
-    from app.services.providers.garmin_connect.data_247 import GarminConnect247Data
+    apply.py::_compose_activity_summaries (apply_calories_fix).
 
-    GarminConnect247Data.save_daily_stats_for_date = garmin_connect_save_daily_stats_for_date
+    This used to ALSO replace GarminConnect247Data.save_daily_stats_for_date to
+    persist bmrKilocalories. That override is REMOVED: garmin_connect is a
+    fork-only provider whose source we own outright, so the fix belongs in
+    data_247.py directly. Keeping it as a runtime patch shadowed later edits to
+    the very file it patched — new fields added to the real
+    save_daily_stats_for_date (floors ascended, intensity minutes) silently
+    never ran. Patching your own source buys every shadowing hazard and none of
+    the upstream-conflict benefit.
+    """
