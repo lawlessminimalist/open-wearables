@@ -50,6 +50,7 @@ PATCHES_ENABLED: dict[str, bool] = {
     "fix-summary-timezone-echo": True,
     "fix-sleep-summary-utc-bucketing": True,
     "fix-health-score-source-priority": True,
+    "fix-garmin-connect-rate-limit-backoff": True,
 }
 
 

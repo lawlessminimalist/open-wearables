@@ -243,6 +243,23 @@ diff; a missed shadow is how `avg_hrv_rmssd_ms` silently went null.
 
 ---
 
+## fix-garmin-connect-rate-limit-backoff
+
+- patch_id:                  fix-garmin-connect-rate-limit-backoff
+- status:                    local_only
+- replacement_kind:          wholesale-replace
+- upstream_url:              https://github.com/the-momentum/open-wearables
+- upstream_issue_or_pr:      null
+- file:                      backend/app/services/providers/garmin_connect/client.py, backend/app/services/providers/garmin_connect/data_247.py
+- symbol:                    GarminConnectClient._login + ._get_api + ._call_with_reauth, GarminConnect247Data.load_and_save_all
+- what_we_changed:           Stop the credential-based Garmin Connect sync from self-inflicting an IP-level rate-limit ban. (1) Added `GarminConnectRateLimitError` and classify 429 / Cloudflare-challenge / "all login strategies exhausted" failures as rate-limiting rather than auth failures — `_call_with_reauth` no longer re-logs-in on them (upstream's auth-marker list matched "403" and "login", so a Cloudflare 403 cost two login storms instead of one). (2) `_get_api` refuses to attempt login while blocked, using an in-process `_blocked_until` plus a Redis cooldown key, so the remaining ~149 iterations of a run fail instantly without network I/O. (3) The Redis cooldown escalates geometrically per consecutive strike (30m → 1h → 2h → 4h, capped 6h, reset on success) so the hourly beat schedule stops re-hammering. (4) `load_and_save_all` pre-flight-checks the cooldown, breaks out of BOTH loops on the first rate-limit instead of swallowing it per (date, data_type), and re-raises so the run is recorded failed rather than silently `partial` with zero records. Genuinely transient errors retry with bounded exponential backoff + jitter, honouring `Retry-After`. Non-rate-limit per-day errors are still swallowed and logged exactly as before.
+- why:                       `load_and_save_all` loops ~30 dates × 5 data types with a blanket `except Exception` that cannot tell "no stress data today" from "we are 429'd". Because `_get_api` only assigns `self._api` after a *successful* login, a failed login left it `None` and every one of the ~150 iterations re-attempted a full login — and the underlying `garminconnect` client tries five strategies per login, sleeping ~16–20s inside the portal strategy. That is up to ~750 auth requests per run, hourly, with overlapping runs. Observed 2026-08-20: every hourly run finishing `partial`, `garmin_connect` data stuck since 2026-08-03, logs a solid wall of `429 — IP rate limited by Garmin` and `HTTP 403 (Cloudflare bot challenge)`. Same failure class as the Ultrahuman refresh bug: an unrecoverable auth error treated as a recoverable per-day error.
+- retire_when:               GarminConnectClient distinguishes rate-limit/WAF rejections from ordinary auth failures and stops re-attempting login once blocked, AND load_and_save_all aborts the run instead of continuing through every remaining (date, data_type) pair.
+- upstream_equivalent_check: backend/app/services/providers/garmin_connect/::GarminConnectRateLimitError
+- local_patch_file:          ow-patches/local/fix-garmin-connect-rate-limit-backoff.py
+
+---
+
 # Frontend Patches (Source Edits)
 
 These changes live directly in `frontend/src/` and are **not toggleable** via
