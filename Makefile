@@ -49,3 +49,6 @@ downgrade:  ## Revert the last migration
 
 reset_db:  ## Truncate all tables in the database (WARNING: deletes all data)
 	$(DOCKER_EXEC) uv run python scripts/reset_database.py
+
+push_local_k3s:  ## Cross-build (linux/amd64) and push images to the homelab registry, then roll deploys. Optional: t=backend|frontend
+	./scripts/build-push.sh $(or $(t),all)
