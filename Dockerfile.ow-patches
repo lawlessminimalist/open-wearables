@@ -1,0 +1,49 @@
+# Fork-owned overlay: adds the ow-patches runtime patch system to the backend image.
+#
+# WHY THIS EXISTS
+# ---------------
+# `ow-patches/` lives at the REPO ROOT, but upstream's backend image is built with
+# `./backend` as the context — so `ow-patches` is not in that context and cannot be
+# COPYed by backend/Dockerfile (Docker forbids `COPY ../`). The result: an image with
+# no ow-patches, and `_apply_ow_patches()` in backend/app/__init__.py silently
+# returning because it can't find the directory. Every fork patch no-ops, the app
+# boots clean, and nothing logs a thing.
+#
+# That is not hypothetical. On 2026-08-20 the homelab k8s cluster was found running
+# with `/root_project/ow-patches` ABSENT and all 14 patches inert — the deployments
+# had no volumeMounts and no OW_PATCHES_DIR. The old docker-compose.prod.yml
+# bind-mounted the directory (and its comment warned about exactly this), but that
+# file was deleted upstream in #1429 and the k8s manifests never replaced the mount.
+#
+# WHY AN OVERLAY RATHER THAN EDITING backend/Dockerfile
+# -----------------------------------------------------
+# Fixing it in upstream's Dockerfile would require moving the build context to the
+# repo root, which breaks upstream's `COPY . /root_project` (it would pull in the
+# frontend too). Keeping the divergence in a fork-owned file means
+# `git merge upstream/main` never conflicts here — the same reasoning as
+# ow-patches/PATCHES.md and .github/workflows/publish-ghcr.yml.
+#
+# USAGE (context must be the repo root):
+#   docker build -f backend/Dockerfile -t ow-backend-base ./backend
+#   docker build -f Dockerfile.ow-patches \
+#                --build-arg BASE_IMAGE=ow-backend-base \
+#                -t open-wearables-platform:latest .
+#
+# CI does this in two steps; see .github/workflows/publish-ghcr.yml.
+# `make push_local_k3s` / scripts/build-push.sh does it for local iteration.
+
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+# /root_project is upstream's WORKDIR, so this lands on discovery candidate #2 in
+# _apply_ow_patches() (`<app>/../ow-patches`). OW_PATCHES_DIR is set anyway so the
+# lookup is explicit rather than relying on the image's directory layout.
+COPY ow-patches /root_project/ow-patches
+
+ENV OW_PATCHES_DIR=/root_project/ow-patches \
+    OW_PATCHES_REQUIRED=1
+
+# Fail the build rather than ship another silently-unpatched image.
+RUN test -f /root_project/ow-patches/apply.py \
+    && test -d /root_project/ow-patches/local \
+    && echo "ow-patches present: $(ls /root_project/ow-patches/local/*.py | wc -l) patch file(s)"

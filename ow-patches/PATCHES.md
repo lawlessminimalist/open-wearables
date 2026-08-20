@@ -34,6 +34,47 @@ diff; a missed shadow is how `avg_hrv_rmssd_ms` silently went null.
 
 ---
 
+## ⚠ Deployment requirement — the patches must be IN the image
+
+`ow-patches/` lives at the **repo root**, but upstream's backend image is built
+with `./backend` as the context. So `ow-patches` is not in that context and
+cannot be `COPY`ed by `backend/Dockerfile` (Docker forbids `COPY ../`). If it
+isn't put there some other way, `_apply_ow_patches()` in `backend/app/__init__.py`
+finds nothing and returns — and **every patch in this file silently no-ops**.
+The app boots clean. Nothing logs. The structural halves (DB columns, schema
+fields, frontend edits) are still present, so you get the exact
+"fields exist but are always null" symptom that a disabled patch produces.
+
+**This happened.** On 2026-08-20 the homelab k8s cluster was found with
+`/root_project/ow-patches` **absent** and all 14 patches inert — for weeks. The
+deployments had no `volumeMounts` and no `OW_PATCHES_DIR`. The old
+`docker-compose.prod.yml` bind-mounted the directory (its comment warned about
+precisely this failure), but upstream deleted that file in #1429 and the k8s
+manifests never replaced the mount.
+
+Three guards now exist; keep all three:
+
+1. **`Dockerfile.ow-patches`** (repo root) — fork-owned overlay that layers
+   `ow-patches` onto the upstream-built backend image and sets
+   `OW_PATCHES_DIR` + `OW_PATCHES_REQUIRED`. Both CI
+   (`.github/workflows/publish-ghcr.yml`) and `scripts/build-push.sh` build
+   through it, and both then assert `apply.py` is present in the result.
+2. **`OW_PATCHES_REQUIRED=1`** — makes a missing directory a hard startup
+   failure instead of a silent skip. Deployments of this fork should always set
+   it. Unset, an unpatched run now at least warns on stderr. Covered by
+   `backend/tests/test_ow_patches_guard.py`.
+3. **Deployment manifests** must run the overlay image. If you build the
+   backend with a plain `podman build ./backend`, you will ship an unpatched
+   image again.
+
+Quick check against a running cluster:
+
+```bash
+kubectl -n open-wearables exec deploy/app -- ls /root_project/ow-patches/apply.py
+```
+
+---
+
 ## fix-hrv-source-unknown
 
 - patch_id:                  fix-hrv-source-unknown
@@ -127,6 +168,7 @@ diff; a missed shadow is how `avg_hrv_rmssd_ms` silently went null.
 - what_we_changed:           Make Ultrahuman sleep-stage parsing robust to capitalization and key-name variants (deep / Deep Sleep / deep_sleep; stage_time / duration). Always emit the SleepStagesSummary object on SleepSummary responses (with null fields if the source doesn't track stages) so consumers can distinguish "source doesn't expose stages" from "feature not implemented". The summary-side change is now a decorator over upstream's get_sleep_summaries (ensure_stages_object), not a wholesale replacement — see apply.py.
 - retire_when:               get_sleep_summary response.data[*].stages is always an object (never null/missing) when sleep records exist, AND ultrahuman sleep stages parse correctly when upstream returns them with the canonical type tokens.
 - upstream_equivalent_check: stage_aliases
+- rebased_note_2:            2026-08-20: the Ultrahuman half of this patch was SILENTLY INERT. `_compose_sleep_summaries` loaded the module via `_patch()` but never called `install()`, so Ultrahuman247Data.normalize_sleep was still upstream's strict, capitalisation-sensitive lookup while this file asserted the fix was live. Fixed by calling `stages_module.install()` in the composer (mirroring what `_compose_activity_summaries` already did for fix-calories-total-mislabelled). Guarded by backend/tests/test_ow_patches_installed.py, which asserts every patched symbol's `__module__` is an `_ow_patches*` module.
 - local_patch_file:          ow-patches/local/fix-sleep-stages-missing.py
 
 ---
@@ -159,6 +201,7 @@ diff; a missed shadow is how `avg_hrv_rmssd_ms` silently went null.
 - rebased_note:              Rebased 2026-07-26 onto merged upstream. Upstream rewrote all three aggregators: #1232 added prefer_daily_sum / is_daily_total de-duplication; #1242 added SeriesType.active_time → active_time_minutes and DataSource.provider in SELECT/GROUP BY/return dict. The stale wholesale copies used naive func.sum(case(...)) and shadowed both (reintroducing daily-total double-count and dropping active_time_minutes/provider). Now upstream's current three bodies with ONLY the date-bucket sub-expression swapped to the zone_offset-first / user.timezone / UTC coalesce.
 - retire_when:               DataPointSeriesRepository.get_daily_activity_aggregates groups by user-local date (any of: AT TIME ZONE user.timezone, ZoneInfo-based bucketing, per-row zone_offset cast). Marker: any reference to `_local_date_bucket_expr` or equivalent timezone-aware bucketing helper in DataPointSeriesRepository.
 - upstream_equivalent_check: backend/app/repositories/data_point_series_repository.py::_local_date_bucket_expr
+- rebased_note_2:            Rebased 2026-08-20 onto upstream d9a64bf. Upstream #1414 (44a268b) added `DataSource.device_type` to get_daily_activity_aggregates' SELECT, GROUP BY and result dict; the wholesale copy shadowed it away, so every activity summary returned `device_type: null` and the frontend fell back to a generic device badge. Re-applied in all three places. get_daily_active_minutes / get_daily_intensity_minutes verified byte-identical to upstream apart from the intended local_date change. Guarded by backend/tests/test_ow_patches_column_drift.py.
 - local_patch_file:          ow-patches/local/fix-activity-summary-utc-bucketing.py
 
 ---
@@ -190,6 +233,7 @@ diff; a missed shadow is how `avg_hrv_rmssd_ms` silently went null.
 - rebased_note:              Rebased 2026-07-26 onto merged upstream. Upstream rewrote get_sleep_summaries (#1257 provider grouping + per-session `sessions` breakdown; #1259 physio LATERAL producing avg_hr/avg_hrv_sdnn/avg_hrv_rmssd/avg_resp/avg_spo2) — the stale wholesale copy dropped ALL of it (re-nulling the physio metrics, the same failure that retired fix-hrv-nightly-aggregate). Now upstream's current body with ONLY the local_sleep_date zone_offset-first / user.timezone-fallback / UTC-fallback swapped. ALSO extended to replace _get_sleep_sessions with the identical bucket, so the sessions key matches the summary key for NULL-zone_offset providers (else `sessions` came back empty for Garmin Connect / Ultrahuman).
 - retire_when:               EventRecordRepository.get_sleep_summaries falls back to a non-UTC source when zone_offset is null (i.e. uses user.timezone or any other timezone-aware mechanism for the wake-date bucket).
 - upstream_equivalent_check: backend/app/repositories/event_record_repository.py::func.timezone
+- rebased_note_2:            Rebased 2026-08-20 onto upstream d9a64bf. Same #1414 `device_type` regression as fix-activity-summary-utc-bucketing, in four places (subquery SELECT + GROUP BY, outer SELECT, result dict) plus a stale docstring. Re-applied. NOTE `_get_sleep_sessions` must NOT gain device_type: the summary-side join key is the 4-tuple (sleep_date, provider, source, device_model), and adding it to one side only would empty every `sessions` list. Upstream's #1259 physio LATERAL and #1257 provider grouping verified intact. Guarded by backend/tests/test_ow_patches_column_drift.py.
 - local_patch_file:          ow-patches/local/fix-sleep-summary-utc-bucketing.py
 
 ---
@@ -205,6 +249,7 @@ diff; a missed shadow is how `avg_hrv_rmssd_ms` silently went null.
 - what_we_changed:           When `fill_missing_sleep_scores_task` finds two sleep records for the same night (Garmin + Ultrahuman), it persists two `provider='internal'` scores — one per underlying sleep_record_id. Dedupe at read time: group by (local-date in user.timezone, category), keep the score whose underlying sleep record has the highest-priority source. Resilience/recovery scores without a sleep_record_id pass through untouched. Pagination applied after dedup so total_count reflects what consumers see. No-op when caller filters by `provider`.
 - retire_when:               HealthScoreRepository.get_with_filters returns at most one score per (local-date, category) when multiple providers have records for the same night, OR upstream offers an explicit dedupe option.
 - upstream_equivalent_check: backend/app/repositories/health_score_repository.py::provider_order
+- rebased_note_2:            Rebased 2026-08-20. Two correctness fixes, neither caused by upstream drift (get_with_filters is byte-identical to baseline). (1) The dedup ranked on `DataSource.source`, which is free-form (values like `apple_health_sdk` or `com.apple.health.<UUID>`), via the STRICT `ProviderName()` constructor — so every non-canonical row raised, scored 99, and the winner was arbitrary. Now selects the canonical `DataSource.provider` column (added upstream in #1414) and falls back to `ProviderName.from_source_string`, mirroring upstream's own `_filter_by_priority`. It only ever worked because garmin_connect/ultrahuman happen to write source == provider_name. (2) The bucket key did `recorded_at.astimezone(user_tz).date()`, but fill_missing_sleep_scores_task stores an ALREADY-LOCAL datetime wearing a UTC label, so the offset was applied twice — shifting a night backwards for negative offsets. Now uses `.date()` directly for tz-aware values, converting only naive ones.
 - local_patch_file:          ow-patches/local/fix-health-score-source-priority.py
 
 ---
@@ -256,6 +301,7 @@ diff; a missed shadow is how `avg_hrv_rmssd_ms` silently went null.
 - why:                       `load_and_save_all` loops ~30 dates × 5 data types with a blanket `except Exception` that cannot tell "no stress data today" from "we are 429'd". Because `_get_api` only assigns `self._api` after a *successful* login, a failed login left it `None` and every one of the ~150 iterations re-attempted a full login — and the underlying `garminconnect` client tries five strategies per login, sleeping ~16–20s inside the portal strategy. That is up to ~750 auth requests per run, hourly, with overlapping runs. Observed 2026-08-20: every hourly run finishing `partial`, `garmin_connect` data stuck since 2026-08-03, logs a solid wall of `429 — IP rate limited by Garmin` and `HTTP 403 (Cloudflare bot challenge)`. Same failure class as the Ultrahuman refresh bug: an unrecoverable auth error treated as a recoverable per-day error.
 - retire_when:               GarminConnectClient distinguishes rate-limit/WAF rejections from ordinary auth failures and stops re-attempting login once blocked, AND load_and_save_all aborts the run instead of continuing through every remaining (date, data_type) pair.
 - upstream_equivalent_check: backend/app/services/providers/garmin_connect/::GarminConnectRateLimitError
+- rebased_note:              2026-08-20: this patch was SILENTLY INERT on first landing. Its id was added to PATCHES_ENABLED but not to `_STANDALONE_PATCHES` in apply.py, and apply_patches() iterates the tuple, not the flag dict — so it never installed. Its own tests passed because the fixture called install() directly. Fixed by adding it to `_STANDALONE_PATCHES`; the test fixture now uses the already-installed module instead of loading a second copy. Guarded by backend/tests/test_ow_patches_installed.py::TestRegistryConsistency.
 - local_patch_file:          ow-patches/local/fix-garmin-connect-rate-limit-backoff.py
 
 ---

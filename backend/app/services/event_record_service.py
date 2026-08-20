@@ -10,6 +10,7 @@ from app.database import DbSession
 from app.models import (
     DataPointSeries,
     DataSource,
+    DetailType,
     EventRecord,
     EventRecordDetail,
     HealthScore,
@@ -159,7 +160,7 @@ class EventRecordService(
         self,
         db_session: DbSession,
         detail: EventRecordDetailCreate,
-        detail_type: str = "workout",
+        detail_type: DetailType = "workout",
     ) -> EventRecordDetail:
         result = self.event_record_detail_repo.create(db_session, detail, detail_type=detail_type)
         # event_record_detail_repo.create commits internally, so data is already persisted.
@@ -172,7 +173,7 @@ class EventRecordService(
             if data_source is not None:
                 self._emit_event_record_webhook(record, data_source, detail)
 
-        return result  # ty:ignore[invalid-return-type]
+        return result
 
     @staticmethod
     def _local_sleep_date(start_datetime: datetime, zone_offset: str | None) -> date:
@@ -695,14 +696,16 @@ class EventRecordService(
 
         return [self._build_response(record, data_source) for record, data_source in records]
 
-    def get_count_by_workout_type(self, db_session: DbSession) -> list[tuple[str | None, int]]:
-        """Get count of workouts grouped by workout type."""
-        return self.crud.get_count_by_workout_type(db_session)
+    def get_category_counts(self, db_session: DbSession) -> list[tuple[str, int]]:
+        """Count event records grouped by category (cheap aggregate on a small table)."""
+        return self.crud.get_category_counts(db_session)
 
     def _map_source(self, data_source: DataSource) -> DataSourceSchema:
         return DataSourceSchema(
-            provider=data_source.source or "unknown",
+            provider=data_source.provider or "unknown",
+            source=data_source.source,
             device=data_source.device_model,
+            device_type=data_source.device_type,
         )
 
     @handle_exceptions

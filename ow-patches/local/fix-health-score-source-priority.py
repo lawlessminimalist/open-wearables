@@ -77,10 +77,15 @@ def get_with_filters(
     if params.end_datetime:
         filters.append(HealthScore.recorded_at < params.end_datetime)
 
-    # Pull all matching rows + the underlying sleep record's source. Outer
-    # joins so resilience / non-sleep scores (no sleep_record_id) still appear.
-    rows: list[tuple[HealthScore, str | None]] = (
-        db_session.query(HealthScore, DataSource.source)
+    # Pull all matching rows plus the underlying sleep record's provider AND
+    # source. `provider` is the canonical ProviderName enum column (added
+    # upstream in #1414); `source` is free-form (str_100) and holds values like
+    # "apple_health_sdk" or "com.apple.health.<UUID>". Ranking on `source` alone
+    # meant strict ProviderName() raised for every non-canonical value, so every
+    # row scored 99 and the dedup winner was arbitrary. Outer joins so
+    # resilience / non-sleep scores (no sleep_record_id) still appear.
+    rows: list[tuple[HealthScore, str | None, str | None]] = (
+        db_session.query(HealthScore, DataSource.provider, DataSource.source)
         .outerjoin(EventRecord, EventRecord.id == HealthScore.sleep_record_id)
         .outerjoin(DataSource, DataSource.id == EventRecord.data_source_id)
         .filter(and_(*filters))
@@ -91,7 +96,7 @@ def get_with_filters(
     # Caller filtered by provider — they explicitly want every row of that
     # provider; no priority dedup applies.
     if params.provider is not None:
-        scores = [hs for hs, _src in rows]
+        scores = [hs for hs, _prov, _src in rows]
         total = len(scores)
         return scores[params.offset : params.offset + params.limit], total
 
@@ -104,29 +109,55 @@ def get_with_filters(
 
     provider_order = ProviderPriorityRepository(ProviderPriority).get_priority_order(db_session)
 
-    def _priority_index(source: str | None) -> int:
-        if not source:
-            return 99  # unknown source loses to anything ranked
+    def _priority_index(provider_col: str | None, source: str | None) -> int:
+        """Rank a row's provider, mirroring upstream's _filter_by_priority.
+
+        Prefer the canonical `provider` column; fall back to parsing the
+        free-form `source` tolerantly (ProviderName.from_source_string) rather
+        than with the strict constructor, which raises on anything that is not
+        already an exact enum value.
+        """
+        raw = provider_col or source
+        if not raw:
+            return 99  # unknown provider loses to anything ranked
         try:
-            provider = ProviderName(source)
+            provider = ProviderName(raw)
         except ValueError:
-            return 99
+            provider = ProviderName.from_source_string(raw)
         return provider_order.get(provider, 99)
+
+    def _local_date(recorded_at, tz):  # noqa: ANN001, ANN202
+        """Return the local calendar date for a HealthScore.recorded_at.
+
+        fill_missing_sleep_scores_task writes an ALREADY-LOCAL datetime wearing a
+        UTC label::
+
+            recorded_at=local_end_by_id[record_id].replace(tzinfo=timezone.utc)
+
+        where local_end_datetime = end_datetime + COALESCE(zone_offset,'+00:00').
+        So .date() on it is already the local sleep date; calling .astimezone(tz)
+        first would apply the offset a second time and shift a night backwards for
+        negative offsets (and forwards past 14:00 local for +10). Naive datetimes
+        are converted, since those did not come from that writer.
+        """
+        if recorded_at.tzinfo is None:
+            return recorded_at.replace(tzinfo=ZoneInfo("UTC")).astimezone(tz).date()
+        return recorded_at.date()
 
     # Group by (local_date, category). Resilience/recovery scores without a
     # sleep_record_id pass through untouched — they don't dedupe.
-    groups: dict[tuple, list[tuple[HealthScore, str | None]]] = defaultdict(list)
+    groups: dict[tuple, list[tuple[HealthScore, str | None, str | None]]] = defaultdict(list)
     untracked: list[HealthScore] = []
-    for hs, src in rows:
+    for hs, prov, src in rows:
         if hs.sleep_record_id is None:
             untracked.append(hs)
             continue
-        local_date = hs.recorded_at.astimezone(user_tz).date()
-        groups[(local_date, hs.category)].append((hs, src))
+        local_date = _local_date(hs.recorded_at, user_tz)
+        groups[(local_date, hs.category)].append((hs, prov, src))
 
     deduped: list[HealthScore] = list(untracked)
     for entries in groups.values():
-        entries.sort(key=lambda e: (_priority_index(e[1]), str(e[0].id)))
+        entries.sort(key=lambda e: (_priority_index(e[1], e[2]), str(e[0].id)))
         deduped.append(entries[0][0])
 
     # Re-establish the recorded_at DESC ordering the route expects.

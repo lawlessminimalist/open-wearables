@@ -12,6 +12,10 @@
     {
       "source": "/dev-guides/backend-e2e-integration",
       "destination": "/dev-guides/integration-guide"
+    },
+    {
+      "source": "/deployment/docker-images",
+      "destination": "/deployment/docker"
     }
   ],
   "navigation": {
@@ -137,7 +141,7 @@
           {
             "group": "Deployment",
             "pages": [
-              "deployment/docker-images",
+              "deployment/docker",
               "deployment/railway"
             ]
           },
@@ -193,7 +197,8 @@
             "group": "Connections",
             "pages": [
               "GET /api/v1/users/{user_id}/connections",
-              "DELETE /api/v1/users/{user_id}/connections/{provider}"
+              "DELETE /api/v1/users/{user_id}/connections/{provider}",
+              "DELETE /api/v1/users/{user_id}/connections/{provider}/data"
             ]
           },
           {

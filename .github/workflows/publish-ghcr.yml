@@ -97,7 +97,11 @@ jobs:
             type=sha,prefix=sha-,format=short
             type=raw,value=${{ inputs.tag }},enable=${{ inputs.tag != '' }}
 
-      - name: Build and push
+      # ---------------------------------------------------------------------
+      # frontend: single build, nothing fork-specific to add.
+      # ---------------------------------------------------------------------
+      - name: Build and push (frontend)
+        if: matrix.name == 'frontend'
         uses: docker/build-push-action@v6
         with:
           context: ${{ matrix.context }}
@@ -109,12 +113,64 @@ jobs:
           provenance: false
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          # Baked into the backend image as the Sentry release. The frontend
-          # Dockerfile doesn't declare this ARG and ignores it.
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+
+      # ---------------------------------------------------------------------
+      # backend: two steps, because ow-patches lives outside ./backend and so
+      # cannot be COPYed by upstream's Dockerfile. Step 1 builds upstream's
+      # image and pushes it under a `-base` tag; step 2 layers ow-patches on
+      # top from the repo root and pushes the tags deployments actually use.
+      # Without step 2 the fork patches are silently inert — see
+      # Dockerfile.ow-patches for the full explanation.
+      # ---------------------------------------------------------------------
+      - name: Base image tag
+        if: matrix.name == 'backend'
+        id: base
+        run: echo "ref=ghcr.io/${{ steps.owner.outputs.owner }}/${{ matrix.image }}-base:${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push backend base
+        if: matrix.name == 'backend'
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          tags: ${{ steps.base.outputs.ref }}
+          # Baked in as the Sentry release.
           build-args: |
             GIT_SHA=${{ github.sha }}
           cache-from: type=gha,scope=${{ matrix.name }}
           cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+
+      - name: Build and push backend (+ ow-patches overlay)
+        if: matrix.name == 'backend'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.ow-patches
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            BASE_IMAGE=${{ steps.base.outputs.ref }}
+          cache-from: type=gha,scope=${{ matrix.name }}-overlay
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}-overlay
+
+      # Cheap guard: prove the published backend image really contains the
+      # patches, so a regression here fails CI instead of quietly shipping.
+      - name: Verify ow-patches present in published image
+        if: matrix.name == 'backend'
+        run: |
+          set -euo pipefail
+          TAG="$(printf '%s\n' "${{ steps.meta.outputs.tags }}" | head -1)"
+          echo "inspecting $TAG"
+          docker run --rm --entrypoint sh "$TAG" -c \
+            'test -f /root_project/ow-patches/apply.py && ls /root_project/ow-patches/local/*.py | wc -l'
 
   release:
     name: GitHub Release

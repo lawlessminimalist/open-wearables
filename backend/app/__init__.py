@@ -32,6 +32,15 @@ def _apply_ow_patches() -> None:
          where backend/app/ is two dirs deep)
       4. A pre-loaded sys.modules['_ow_patches_apply'] (e.g. an A/B test
          harness that pre-loads with PATCHES_ENABLED already mutated)
+
+    Set OW_PATCHES_REQUIRED=1 to make a missing ow-patches directory a hard
+    startup failure instead of a silent skip. Deployments of THIS fork should
+    always set it: ow-patches lives at the repo root, outside the ./backend
+    build context, so it is trivially easy to ship an image without it — and
+    without this guard every fork patch silently no-ops with no log line and a
+    perfectly healthy-looking boot. That is exactly what happened on the
+    homelab k8s cluster (2026-08-20): all 14 patches inert for weeks because
+    the deployment had no ow-patches mount and nothing complained.
     """
     pre_loaded = sys.modules.get("_ow_patches_apply")
     if pre_loaded is not None:
@@ -48,7 +57,17 @@ def _apply_ow_patches() -> None:
 
     apply_path = next((c for c in candidates if c.exists()), None)
     if apply_path is None:
-        return  # Fork patches not present (e.g. running against pure upstream checkout)
+        if os.environ.get("OW_PATCHES_REQUIRED", "").strip().lower() in ("1", "true", "yes"):
+            searched = "\n  ".join(str(c) for c in candidates)
+            raise RuntimeError(
+                "OW_PATCHES_REQUIRED is set but ow-patches/apply.py was not found. "
+                "Every fork patch would silently no-op. Searched:\n  " + searched + "\n"
+                "Fix: build the image via Dockerfile.ow-patches (which copies ow-patches "
+                "to /root_project/ow-patches), or set OW_PATCHES_DIR / mount the directory."
+            )
+        # Pure upstream checkout, or a deliberately un-patched run.
+        print("ow-patches: directory not found; running unpatched (upstream behaviour)", file=sys.stderr)
+        return
 
     spec = importlib.util.spec_from_file_location("_ow_patches_apply", apply_path)
     if spec is None or spec.loader is None:

@@ -26,18 +26,19 @@ import {
   useGenerateInvitationCode,
 } from '@/hooks/api/use-users';
 import { useUserDataSummary } from '@/hooks/api/use-health';
+import { DisplayTimezoneProvider } from '@/contexts/display-timezone';
+import { TimezoneSelector } from '@/components/common/timezone-selector';
 import { ROUTES } from '@/lib/constants/routes';
 import { API_CONFIG } from '@/lib/api/config';
 import { copyToClipboard } from '@/lib/utils/clipboard';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { ProfileSection } from '@/components/user/profile-section';
+import { UploadProgressDialog } from '@/components/user/upload-progress-dialog';
 import { SleepSection } from '@/components/user/sleep-section';
 import { ActivitySection } from '@/components/user/activity-section';
 import { BodySection } from '@/components/user/body-section';
 import { WorkoutSection } from '@/components/user/workout-section';
 import { ScoresSection } from '@/components/user/scores-section';
-import { DisplayTimezoneProvider } from '@/contexts/display-timezone';
-import { TimezoneSelector } from '@/components/common/timezone-selector';
 import { WomensHealthSection } from '@/components/user/womens-health-section';
 import type { DateRangeValue } from '@/components/ui/date-range-selector';
 import {
@@ -103,7 +104,12 @@ function UserDetailPage() {
     useState<DateRangeValue>(90);
 
   const { mutate: deleteUser, isPending: isDeleting } = useDeleteUser();
-  const { handleUpload, isUploading: isUploadingFile } = useAppleXmlUpload();
+  const {
+    handleUpload,
+    isUploading: isUploadingFile,
+    progress: uploadProgress,
+    resetProgress,
+  } = useAppleXmlUpload();
   const {
     mutate: generateInvitationCode,
     data: invitationCodeData,
@@ -302,7 +308,7 @@ function UserDetailPage() {
             <Button variant="secondary" onClick={handleCopyPairLink}>
               {copied ? (
                 <>
-                  <Check className="h-4 w-4 text-[hsl(var(--success-muted))]" />
+                  <Check className="h-4 w-4 text-success-muted" />
                   Copied!
                 </>
               ) : (
@@ -342,6 +348,10 @@ function UserDetailPage() {
               accept=".xml"
               onChange={(e) => handleUpload(userId, e)}
               className="hidden"
+            />
+            <UploadProgressDialog
+              progress={uploadProgress}
+              onClose={resetProgress}
             />
             <AlertDialog
               open={isDeleteDialogOpen}
@@ -460,7 +470,7 @@ function UserDetailPage() {
                     aria-label="Copy API URL"
                   >
                     {urlCopied ? (
-                      <Check className="h-4 w-4 text-[hsl(var(--success-muted))]" />
+                      <Check className="h-4 w-4 text-success-muted" />
                     ) : (
                       <Copy className="h-4 w-4" />
                     )}
@@ -486,7 +496,7 @@ function UserDetailPage() {
                     aria-label="Copy invitation code"
                   >
                     {codeCopied ? (
-                      <Check className="h-4 w-4 text-[hsl(var(--success-muted))]" />
+                      <Check className="h-4 w-4 text-success-muted" />
                     ) : (
                       <Copy className="h-4 w-4" />
                     )}
