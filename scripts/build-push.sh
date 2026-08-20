@@ -79,13 +79,34 @@ build_push(){                              # name  context  [extra build args...
   podman push --tls-verify=false "${REG}/${name}:latest"
 }
 
+# The backend needs a second layer: ow-patches lives at the repo root, outside the
+# ./backend build context, so upstream's Dockerfile cannot COPY it. Skipping this
+# ships an image where every fork patch silently no-ops. See Dockerfile.ow-patches.
+build_push_backend(){
+  local name="open-wearables-platform"
+  local base="localhost/${name}-base:latest"
+  echo ">> building ${name} base  (${PLATFORM})"
+  podman build --platform="${PLATFORM}" -f backend/Dockerfile -t "${base}" ./backend
+  echo ">> layering ow-patches onto ${name}"
+  podman build --platform="${PLATFORM}" -f Dockerfile.ow-patches \
+    --build-arg "BASE_IMAGE=${base}" -t "${REG}/${name}:latest" .
+  local arch; arch="$(podman image inspect "${REG}/${name}:latest" --format '{{.Architecture}}')"
+  [ "${arch}" = "amd64" ] || { echo "!! ${name} built ${arch}, expected amd64 — aborting"; exit 1; }
+  # Fail here rather than discover it in prod three weeks later.
+  podman run --rm --entrypoint sh "${REG}/${name}:latest" -c \
+    'test -f /root_project/ow-patches/apply.py' \
+    || { echo "!! ow-patches missing from ${name} image — aborting"; exit 1; }
+  echo ">> pushing ${name}"
+  podman push --tls-verify=false "${REG}/${name}:latest"
+}
+
 # ---- run --------------------------------------------------------------------
 cd "${REPO_ROOT}"
 ensure_forward
 
 RESTART=""
 if [ "${TARGET}" = "all" ] || [ "${TARGET}" = "backend" ]; then
-  build_push open-wearables-platform ./backend
+  build_push_backend
   RESTART="${RESTART} ${BACKEND_DEPLOYS}"
 fi
 if [ "${TARGET}" = "all" ] || [ "${TARGET}" = "frontend" ]; then

@@ -34,6 +34,47 @@ diff; a missed shadow is how `avg_hrv_rmssd_ms` silently went null.
 
 ---
 
+## ⚠ Deployment requirement — the patches must be IN the image
+
+`ow-patches/` lives at the **repo root**, but upstream's backend image is built
+with `./backend` as the context. So `ow-patches` is not in that context and
+cannot be `COPY`ed by `backend/Dockerfile` (Docker forbids `COPY ../`). If it
+isn't put there some other way, `_apply_ow_patches()` in `backend/app/__init__.py`
+finds nothing and returns — and **every patch in this file silently no-ops**.
+The app boots clean. Nothing logs. The structural halves (DB columns, schema
+fields, frontend edits) are still present, so you get the exact
+"fields exist but are always null" symptom that a disabled patch produces.
+
+**This happened.** On 2026-08-20 the homelab k8s cluster was found with
+`/root_project/ow-patches` **absent** and all 14 patches inert — for weeks. The
+deployments had no `volumeMounts` and no `OW_PATCHES_DIR`. The old
+`docker-compose.prod.yml` bind-mounted the directory (its comment warned about
+precisely this failure), but upstream deleted that file in #1429 and the k8s
+manifests never replaced the mount.
+
+Three guards now exist; keep all three:
+
+1. **`Dockerfile.ow-patches`** (repo root) — fork-owned overlay that layers
+   `ow-patches` onto the upstream-built backend image and sets
+   `OW_PATCHES_DIR` + `OW_PATCHES_REQUIRED`. Both CI
+   (`.github/workflows/publish-ghcr.yml`) and `scripts/build-push.sh` build
+   through it, and both then assert `apply.py` is present in the result.
+2. **`OW_PATCHES_REQUIRED=1`** — makes a missing directory a hard startup
+   failure instead of a silent skip. Deployments of this fork should always set
+   it. Unset, an unpatched run now at least warns on stderr. Covered by
+   `backend/tests/test_ow_patches_guard.py`.
+3. **Deployment manifests** must run the overlay image. If you build the
+   backend with a plain `podman build ./backend`, you will ship an unpatched
+   image again.
+
+Quick check against a running cluster:
+
+```bash
+kubectl -n open-wearables exec deploy/app -- ls /root_project/ow-patches/apply.py
+```
+
+---
+
 ## fix-hrv-source-unknown
 
 - patch_id:                  fix-hrv-source-unknown
