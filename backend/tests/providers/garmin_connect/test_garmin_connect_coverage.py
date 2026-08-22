@@ -276,3 +276,75 @@ class TestCoverageDeclared:
         c = GarminConnectStrategy().coverage
         assert not (c.workout_fields - valid)
         assert not (c.sleep_fields - valid)
+
+
+class TestSessionRestoreHydratesDisplayName:
+    """Regression: a token restored from disk left display_name unset.
+
+    `garminconnect` sets display_name only inside login(). client.load()
+    authenticates but leaves it None, and get_stats / get_heart_rates
+    interpolate it into their URLs — raising "Display name is not set" and
+    returning 403 respectively. Latent until the token store moved to a PVC:
+    before that /tmp was wiped every pod restart, so every sync did a full login
+    and set display_name as a side effect. After the PVC, a restored session
+    silently lost daily stats and heart rate on every date.
+    """
+
+    def _client(self, tmp_path: Any):  # noqa: ANN202
+        from app.services.providers.garmin_connect.client import GarminConnectClient
+
+        c = GarminConnectClient()
+        c._token_store_path = lambda: tmp_path  # type: ignore[method-assign]
+        return c
+
+    def _api(self, profile: Any, authenticated: bool = True):  # noqa: ANN202
+        class FakeInner:
+            is_authenticated = authenticated
+
+            def load(self, _p: str) -> None:
+                pass
+
+            def connectapi(self, path: str) -> Any:
+                assert path == "/userprofile-service/socialProfile"
+                if isinstance(profile, Exception):
+                    raise profile
+                return profile
+
+        class FakeApi:
+            display_name = None
+            full_name = None
+            client = FakeInner()
+
+        return FakeApi()
+
+    def test_display_name_is_populated_from_social_profile(self, tmp_path: Any) -> None:
+        c = self._client(tmp_path)
+        api = self._api({"displayName": "dhlaw", "fullName": "Daniel Lawless"})
+        assert c._try_load_saved_session(api) is True
+        assert api.display_name == "dhlaw", "get_stats/get_heart_rates need this"
+        assert api.full_name == "Daniel Lawless"
+
+    def test_falls_back_to_login_when_profile_fetch_fails(self, tmp_path: Any) -> None:
+        """Returning False makes the caller do a full login, which sets it itself."""
+        c = self._client(tmp_path)
+        api = self._api(RuntimeError("boom"))
+        assert c._try_load_saved_session(api) is False
+        assert api.display_name is None
+
+    def test_falls_back_when_profile_has_no_display_name(self, tmp_path: Any) -> None:
+        c = self._client(tmp_path)
+        assert c._try_load_saved_session(self._api({"fullName": "x"})) is False
+        assert c._try_load_saved_session(self._api({})) is False
+        assert c._try_load_saved_session(self._api(None)) is False
+
+    def test_unauthenticated_session_short_circuits(self, tmp_path: Any) -> None:
+        c = self._client(tmp_path)
+        api = self._api({"displayName": "dhlaw"}, authenticated=False)
+        assert c._try_load_saved_session(api) is False
+
+    def test_missing_token_store_is_not_an_error(self, tmp_path: Any) -> None:
+        from app.services.providers.garmin_connect.client import GarminConnectClient
+
+        c = GarminConnectClient()
+        c._token_store_path = lambda: tmp_path / "does-not-exist"  # type: ignore[method-assign]
+        assert c._try_load_saved_session(self._api({"displayName": "dhlaw"})) is False
