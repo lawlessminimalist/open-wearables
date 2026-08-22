@@ -57,6 +57,46 @@ class GarminConnectClient:
         email, password = self._get_credentials()
         return garminconnect.Garmin(email, password)
 
+    def _hydrate_profile(self, api: Any) -> bool:
+        """Populate api.display_name after restoring a session from disk.
+
+        `garminconnect` sets display_name only inside login(), from
+        GET /userprofile-service/socialProfile. Restoring a token with
+        client.load() authenticates the session but leaves display_name None —
+        and several endpoints interpolate it straight into their URL:
+
+            get_stats            -> raises "Display name is not set"
+            get_heart_rates      -> builds ".../None" and Garmin answers 403
+
+        So a session-restored client silently loses daily stats and heart rate.
+        This did not surface until the token store was moved onto a PVC: before
+        that /tmp was wiped on every pod restart, so every sync did a full login
+        and display_name was always set as a side effect.
+
+        One lightweight authenticated request, and far cheaper than the login it
+        replaces — login walks up to five strategies against the endpoint Garmin
+        rate-limits. Returns False so the caller falls back to a full login,
+        which sets display_name itself.
+        """
+        try:
+            prof = api.client.connectapi("/userprofile-service/socialProfile")
+        except Exception as exc:
+            log_structured(
+                logger,
+                "warning",
+                "Could not hydrate Garmin profile from restored session; re-authenticating",
+                provider=_PROVIDER,
+                error=str(exc),
+            )
+            return False
+
+        if not isinstance(prof, dict) or not prof.get("displayName"):
+            return False
+
+        api.display_name = prof["displayName"]
+        api.full_name = prof.get("fullName", "")
+        return True
+
     def _try_load_saved_session(self, api: Any) -> bool:
         """Return True if we successfully loaded a saved token."""
         token_path = self._token_store_path()
@@ -65,6 +105,10 @@ class GarminConnectClient:
         try:
             api.client.load(str(token_path))
             if not api.client.is_authenticated:
+                return False
+            # An authenticated session is not a usable one until display_name is
+            # set — see _hydrate_profile.
+            if not self._hydrate_profile(api):
                 return False
             log_structured(logger, "info", "Loaded saved Garmin Connect session", provider=_PROVIDER)
             return True
