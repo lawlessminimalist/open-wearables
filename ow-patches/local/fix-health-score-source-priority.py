@@ -11,7 +11,7 @@ Bug
 score per underlying sleep `EventRecord`. When the user has both Garmin and
 Ultrahuman sleep records for the same night (a typical multi-device setup),
 two `HealthScore` rows get persisted for that night — both with
-`provider='internal'`, but each tied to a different `sleep_record_id` whose
+`provider='internal'`, but each tied to a different `event_record_id` whose
 underlying source is different (`garmin_connect` vs `ultrahuman`).
 
 The dashboard therefore renders two scores per date, which is confusing and
@@ -23,8 +23,10 @@ At read time, dedupe `(local_date_in_user_tz, category)` keeping the score
 whose underlying sleep record has the highest-priority source. Falls back
 to keeping all rows when:
   - The caller filters by a specific provider (no dedup needed).
-  - A score has no `sleep_record_id` (e.g. resilience scores) — those are
+  - A score has no `event_record_id` (e.g. resilience scores) — those are
     independent of source priority.
+  - A score is not in the SLEEP category — since upstream #1462 the FK is
+    also set on Whoop per-workout strain scores, which must not collapse.
 
 Pagination is applied AFTER dedup so `total_count` reflects what the
 consumer actually sees.
@@ -47,7 +49,7 @@ from sqlalchemy import and_, desc
 from app.database import DbSession
 from app.models import DataSource, EventRecord, HealthScore, ProviderPriority
 from app.repositories.provider_priority_repository import ProviderPriorityRepository
-from app.schemas.enums import ProviderName
+from app.schemas.enums import HealthScoreCategory, ProviderName
 from app.schemas.model_crud.activities import HealthScoreQueryParams
 
 
@@ -83,10 +85,10 @@ def get_with_filters(
     # "apple_health_sdk" or "com.apple.health.<UUID>". Ranking on `source` alone
     # meant strict ProviderName() raised for every non-canonical value, so every
     # row scored 99 and the dedup winner was arbitrary. Outer joins so
-    # resilience / non-sleep scores (no sleep_record_id) still appear.
+    # resilience / non-sleep scores (no event_record_id) still appear.
     rows: list[tuple[HealthScore, str | None, str | None]] = (
         db_session.query(HealthScore, DataSource.provider, DataSource.source)
-        .outerjoin(EventRecord, EventRecord.id == HealthScore.sleep_record_id)
+        .outerjoin(EventRecord, EventRecord.id == HealthScore.event_record_id)
         .outerjoin(DataSource, DataSource.id == EventRecord.data_source_id)
         .filter(and_(*filters))
         .order_by(desc(HealthScore.recorded_at))
@@ -144,12 +146,22 @@ def get_with_filters(
             return recorded_at.replace(tzinfo=ZoneInfo("UTC")).astimezone(tz).date()
         return recorded_at.date()
 
-    # Group by (local_date, category). Resilience/recovery scores without a
-    # sleep_record_id pass through untouched — they don't dedupe.
+    # Group by (local_date, category). Resilience/recovery scores without an
+    # event_record_id pass through untouched — they don't dedupe.
+    #
+    # The SLEEP gate is load-bearing, not defensive. Upstream #1462 (b8f4cfce)
+    # renamed this FK from `sleep_record_id` to `event_record_id` and started
+    # setting it on things that are not sleep: Whoop attaches it to every
+    # per-workout STRAIN score (whoop/workouts.py) to distinguish those from the
+    # per-day cycle strain. Keying on "has a record id" alone would therefore
+    # collapse a user's three Whoop workouts on one day into a single strain
+    # score — silent data loss. Pre-rename, only sleep writers set the column
+    # (the fill task, Apple HealthKit, Polar), so gating on SLEEP reproduces
+    # this patch's original scope exactly rather than inheriting the widened one.
     groups: dict[tuple, list[tuple[HealthScore, str | None, str | None]]] = defaultdict(list)
     untracked: list[HealthScore] = []
     for hs, prov, src in rows:
-        if hs.sleep_record_id is None:
+        if hs.event_record_id is None or hs.category != HealthScoreCategory.SLEEP:
             untracked.append(hs)
             continue
         local_date = _local_date(hs.recorded_at, user_tz)
