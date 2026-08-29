@@ -5,7 +5,7 @@ import type {
 } from '@/lib/api/types';
 import { providerLabel } from '@/components/common/source-badge';
 import { formatMinutes } from './format';
-import { toLocalWallTime, DEFAULT_DISPLAY_TZ } from '@/lib/dates';
+import { toLocalWallTime } from '@/lib/dates';
 
 /**
  * Sleep stage type keys
@@ -116,7 +116,13 @@ export interface SleepStats {
  */
 export function calculateSleepStats(
   summaries: SleepSummary[],
-  tz: string = DEFAULT_DISPLAY_TZ
+  // Required on purpose — no default. This previously defaulted to
+  // DEFAULT_DISPLAY_TZ ("UTC"), and the single call site in sleep-section.tsx
+  // omitted it, so avgBedtime was computed from UTC wall-clock minutes while
+  // every session row beside it rendered in the display timezone. A Brisbane
+  // 23:58 bedtime showed as 13:58. Making it required turns that into a type
+  // error rather than a plausible-looking wrong number.
+  tz: string
 ): SleepStats | null {
   if (summaries.length === 0) {
     return null;
