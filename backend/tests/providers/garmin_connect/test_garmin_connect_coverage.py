@@ -427,3 +427,77 @@ class TestPayloadKeysMatchReality:
         h, captured = handler_factory(hrv={"hrvSummary": {"lastNightAvg": 44}})
         assert h.save_hrv_for_date(None, uuid4(), date(2026, 8, 18)) == 1  # type: ignore[arg-type]
         assert int(captured[0].value) == 44
+
+
+class TestVo2maxLookback:
+    """get_max_metrics is a SINGLE-DAY endpoint (/maxmet/daily/{d}/{d}).
+
+    Querying only the range end would usually record nothing: Garmin writes a
+    value only after a qualifying activity, so most dates return []. Verified
+    live — 2026-08-05/24/27/28 were all empty while 2026-07-18 returned 50.0.
+    """
+
+    class _Client:
+        def __init__(self, has_value_on: date | None) -> None:
+            self.has_value_on = has_value_on
+            self.queried: list[date] = []
+
+        def get_max_metrics(self, cdate: date) -> list[dict]:
+            self.queried.append(cdate)
+            if cdate == self.has_value_on:
+                return [{"generic": {"vo2MaxPreciseValue": 50.0, "calendarDate": cdate.isoformat()}}]
+            return []
+
+        def get_last_used_device_model(self) -> str | None:
+            return "EPIX Gen2"
+
+    def _handler(self, monkeypatch: pytest.MonkeyPatch, client: Any):  # noqa: ANN202
+        captured: list[Any] = []
+        h = GarminConnect247Data("garmin_connect", "x", client)
+        import app.services.providers.garmin_connect.data_247 as mod
+
+        monkeypatch.setattr(mod.timeseries_service, "bulk_create_samples", lambda _db, s: captured.extend(s))
+        return h, captured
+
+    def test_walks_back_until_a_value_is_found(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        end = date(2026, 8, 28)
+        client = self._Client(has_value_on=date(2026, 8, 25))
+        h, captured = self._handler(monkeypatch, client)
+        assert h.save_vo2max_for_range(None, uuid4(), end) == 1  # type: ignore[arg-type]
+        assert float(captured[0].value) == 50.0
+        # stops at the first hit rather than exhausting the window
+        assert client.queried == [date(2026, 8, 28), date(2026, 8, 27), date(2026, 8, 26), date(2026, 8, 25)]
+
+    def test_stamped_with_garmins_calendar_date_not_the_fetch_date(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client = self._Client(has_value_on=date(2026, 8, 25))
+        h, captured = self._handler(monkeypatch, client)
+        h.save_vo2max_for_range(None, uuid4(), date(2026, 8, 28))  # type: ignore[arg-type]
+        assert captured[0].recorded_at.date() == date(2026, 8, 25)
+
+    def test_request_budget_is_capped(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A user who has not trained must not trigger an unbounded walk back."""
+        import app.services.providers.garmin_connect.data_247 as mod
+
+        client = self._Client(has_value_on=None)
+        h, captured = self._handler(monkeypatch, client)
+        assert h.save_vo2max_for_range(None, uuid4(), date(2026, 8, 28)) == 0  # type: ignore[arg-type]
+        assert captured == []
+        assert len(client.queried) == mod._VO2MAX_LOOKBACK_DAYS
+
+
+class TestSleepCountIsSessionsNotSamples:
+    """results["sleep"] is an item count surfaced in sync status.
+
+    _save_sleep_physiology now writes hundreds of intraday rows per night, so
+    folding its return into the sleep count would report a 7-night sync as
+    ~2800 sleep items.
+    """
+
+    def test_physiology_rows_do_not_inflate_the_sleep_count(self, handler_factory: Any) -> None:
+        import inspect
+
+        src = inspect.getsource(GarminConnect247Data.save_sleep_for_date)
+        assert "saved += self._save_sleep_physiology" not in src, (
+            "physiology sample count must not be added to the sleep session count"
+        )
+        assert "self._save_sleep_physiology(" in src, "physiology must still be persisted"

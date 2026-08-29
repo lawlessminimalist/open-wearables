@@ -79,6 +79,12 @@ _MAXCHART = 10000
 # the contents of a workout sample set.
 _HR_KEYS = ("directHeartRate", "HEART_RATE")
 
+# Legacy descriptor-key variants Garmin has returned over the years, folded onto
+# the canonical key used in ACTIVITY_SAMPLE_SERIES. Without this, a payload that
+# names the column HEART_RATE resolves to no HR index at all and the workout HR
+# samples this patch exists to capture are silently dropped.
+_KEY_ALIASES: dict[str, str] = {"HEART_RATE": "directHeartRate"}
+
 
 def _client_get_activity_details(self, activity_id: int | str) -> dict[str, Any]:
     """Wrapper added to GarminConnectClient.
@@ -106,6 +112,7 @@ def _extract_metric_indices(
     ts_idx: int | None = None
     for desc in metric_descriptors:
         key = (desc.get("key") or desc.get("metricKey") or "").strip()
+        key = _KEY_ALIASES.get(key, key)
         idx = desc.get("metricsIndex")
         if not key or idx is None:
             continue

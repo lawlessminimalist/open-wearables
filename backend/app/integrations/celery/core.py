@@ -96,9 +96,10 @@ def create_celery() -> Celery:
             # replaced rather than handed to the next publish/consume.
             "health_check_interval": 30,
             # MUST stay above the longest-running task, and is only meaningful
-            # alongside task_acks_late below. With late acks the message stays
-            # unacked for the whole task; if this elapses first, Redis redelivers
-            # it to another worker and the SAME backfill runs twice concurrently
+            # alongside the per-task acks_late on sync_vendor_data. With late
+            # acks the message stays unacked for the whole task; if this elapses
+            # first, Redis redelivers it to another worker and the SAME backfill
+            # runs twice concurrently
             # — which is precisely how garmin_connect got IP rate-limited and
             # then account-locked. Celery's default is 1 hour, and a year-long
             # historical backfill exceeds that comfortably.
@@ -109,26 +110,29 @@ def create_celery() -> Celery:
         result_serializer="json",
         timezone="UTC",
         enable_utc=True,
-        # Survive a worker restart that lands mid-task. Celery's default
-        # (task_acks_late=False) acks the message on RECEIPT, before the task
-        # runs — so a long backfill killed by a rollout is lost outright, with no
-        # redelivery, and its sync:status:run:* record is frozen at in_progress
-        # until the TTL expires. That is what surfaces in the UI as a "hanging
-        # sync": the run is not slow, it no longer exists. Observed 2026-08-29,
-        # two year-long backfills orphaned by a deploy.
+        # NOTE late acks are set PER-TASK (sync_vendor_data), not globally.
+        # A global task_acks_late would opt in every task that deliberately did
+        # not ask for it — this codebase already sets it individually on nine
+        # tasks — and send_invitation_email_task is not idempotent: a worker
+        # killed after the SMTP send but before the ack would redeliver and send
+        # the invitation twice.
         #
-        # Late acks are safe here specifically because ingest is upsert-based
-        # (ON CONFLICT ... on uq_data_point_series_source_type_time), so a
-        # redelivered task re-runs idempotently rather than duplicating rows.
-        # See visibility_timeout above — the two settings only work as a pair.
-        #
-        # NOTE deliberately NOT setting task_time_limit / task_soft_time_limit:
+        # Also deliberately NOT setting task_time_limit / task_soft_time_limit:
         # the worker runs --pool=threads (scripts/start/worker.sh) and Celery
         # enforces time limits only on the prefork pool. Setting them here would
         # be inert config that reads as protection — the exact failure mode this
         # fork keeps getting bitten by. Bound the network calls instead.
-        task_acks_late=True,
-        task_reject_on_worker_lost=True,
+        # task_reject_on_worker_lost is omitted for the same reason: it only
+        # fires on prefork child loss (WorkerLostError).
+        #
+        # REQUIRED alongside the per-task acks_late. At the default of 4 the worker
+        # reserves concurrency*4 messages up front and holds them UNACKED while
+        # they queue behind whatever is currently running. A message reserved
+        # behind a multi-hour backfill can therefore sit unacked past the
+        # visibility_timeout above and be redelivered to a second worker — the
+        # concurrent double-run that timeout exists to prevent. Prefetching one
+        # message per thread keeps the unacked window equal to the running task.
+        worker_prefetch_multiplier=1,
         task_default_queue="default",
         task_default_exchange="default",
         result_expires=3 * 24 * 3600,
