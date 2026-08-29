@@ -3,7 +3,15 @@
 # upstream_symbol: GarminConnectWorkouts.load_data + GarminConnectClient.get_activity_details
 # retire_when:     GarminConnectWorkouts.load_data calls a per-activity HR-detail endpoint and persists per-second (or sub-minute) heart_rate samples for each workout. Marker: presence of `get_activity_details` (or `activityDetailMetrics`) in backend/app/services/providers/garmin_connect/.
 
-"""Pull per-second HR samples for each Garmin Connect workout.
+"""Pull per-sample workout metrics for each Garmin Connect activity.
+
+Scope note (2026-08-29): this began as HR-only and now persists the same eight
+series the official Garmin webhook provider does — see
+garmin_connect/coverage.py::ACTIVITY_SAMPLE_SERIES, which mirrors
+garmin/coverage.py one-for-one. All eight arrive in the SAME activity-details
+response that was already being fetched for HR, so the extra series cost no
+additional requests. Ingestion is now gated on settings.ingest_workout_samples,
+matching garmin and strava; previously this provider ignored that flag.
 
 Bug
 ---
@@ -48,9 +56,13 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
 
+from app.config import settings
 from app.database import DbSession
-from app.schemas.enums import SeriesType
 from app.schemas.model_crud.activities import TimeSeriesSampleCreate
+from app.services.providers.garmin_connect.coverage import (
+    ACTIVITY_SAMPLE_SERIES,
+    ACTIVITY_SAMPLE_TIMESTAMP_KEYS,
+)
 from app.utils.structured_logging import log_structured
 
 # Activity must have HR + this many seconds of duration before we make the
@@ -62,10 +74,10 @@ _MIN_DURATION_SECONDS = 300
 # (gracefully) downsampled by the Garmin endpoint.
 _MAXCHART = 10000
 
-# Metric-descriptor keys we recognize. Garmin has used a couple of variants
-# over the years.
+# Which columns to persist now lives in garmin_connect/coverage.py, mirroring
+# garmin/coverage.py::ACTIVITY_SAMPLE_SERIES so both Garmin providers agree on
+# the contents of a workout sample set.
 _HR_KEYS = ("directHeartRate", "HEART_RATE")
-_TS_KEYS = ("directTimestamp", "TIMESTAMP", "directTimestampGMT")
 
 
 def _client_get_activity_details(self, activity_id: int | str) -> dict[str, Any]:
@@ -79,20 +91,29 @@ def _client_get_activity_details(self, activity_id: int | str) -> dict[str, Any]
     return result if isinstance(result, dict) else {}
 
 
-def _extract_hr_index(metric_descriptors: list[dict[str, Any]]) -> tuple[int | None, int | None]:
-    """Return (hr_index, timestamp_index) from a metricDescriptors block."""
-    hr_idx: int | None = None
+def _extract_metric_indices(
+    metric_descriptors: list[dict[str, Any]],
+) -> tuple[dict[str, int], int | None]:
+    """Return ({descriptor key: column index}, timestamp index).
+
+    Garmin returns a metricDescriptors block mapping each metric name to its
+    position in every activityDetailMetrics row, so the indices must be resolved
+    per activity rather than assumed — different activity types expose different
+    columns (no power on a walk, no GPS on a treadmill run).
+    """
+    wanted = {key for key, _ in ACTIVITY_SAMPLE_SERIES}
+    found: dict[str, int] = {}
     ts_idx: int | None = None
     for desc in metric_descriptors:
         key = (desc.get("key") or desc.get("metricKey") or "").strip()
         idx = desc.get("metricsIndex")
         if not key or idx is None:
             continue
-        if hr_idx is None and key in _HR_KEYS:
-            hr_idx = int(idx)
-        elif ts_idx is None and key in _TS_KEYS:
+        if key in wanted and key not in found:
+            found[key] = int(idx)
+        elif ts_idx is None and key in ACTIVITY_SAMPLE_TIMESTAMP_KEYS:
             ts_idx = int(idx)
-    return hr_idx, ts_idx
+    return found, ts_idx
 
 
 def _save_activity_hr_samples(
@@ -106,6 +127,14 @@ def _save_activity_hr_samples(
     Returns the number of samples persisted (0 if skipped or no HR data).
     """
     from app.services.timeseries_service import timeseries_service  # noqa: PLC0415
+
+    # Gate on the same platform-wide flag garmin and strava honour. This
+    # provider previously ingested workout samples unconditionally, which is why
+    # it accumulated ~214k rows from 94 activities while the flag it was
+    # ignoring defaults to False and is documented as "significantly increases
+    # DB storage".
+    if not settings.ingest_workout_samples:
+        return 0
 
     activity_id = raw_activity.get("activityId")
     avg_hr = raw_activity.get("averageHR")
@@ -133,40 +162,58 @@ def _save_activity_hr_samples(
     if not metric_descriptors or not activity_metrics:
         return 0
 
-    hr_idx, ts_idx = _extract_hr_index(metric_descriptors)
-    if hr_idx is None or ts_idx is None:
+    metric_idx, ts_idx = _extract_metric_indices(metric_descriptors)
+    if not metric_idx or ts_idx is None:
         return 0
+
+    device_model = self.client.get_last_used_device_model()
+    series_by_key = dict(ACTIVITY_SAMPLE_SERIES)
 
     samples: list[TimeSeriesSampleCreate] = []
     for entry in activity_metrics:
         metrics = entry.get("metrics") or []
-        if hr_idx >= len(metrics) or ts_idx >= len(metrics):
+        if ts_idx >= len(metrics):
             continue
-        bpm = metrics[hr_idx]
         epoch_ms = metrics[ts_idx]
-        if bpm is None or epoch_ms is None or bpm <= 0:
+        if epoch_ms is None:
             continue
         try:
             recorded_at = datetime.fromtimestamp(float(epoch_ms) / 1000.0, tz=timezone.utc)
-            samples.append(
-                TimeSeriesSampleCreate(
-                    id=uuid4(),
-                    user_id=user_id,
-                    source=self.provider_name,
-                    # The DataSource identity is (user_id, device_model, source),
-                    # so omitting this would file these workout HR samples under a
-                    # device-less data_source row, split from every other
-                    # garmin_connect row. Cached on the client — one request per
-                    # sync run, not per activity.
-                    device_model=self.client.get_last_used_device_model(),
-                    recorded_at=recorded_at,
-                    value=Decimal(str(bpm)),
-                    series_type=SeriesType.heart_rate,
-                    external_id=str(activity_id),
-                )
-            )
         except (TypeError, ValueError, OverflowError):
             continue
+
+        for key, col in metric_idx.items():
+            if col >= len(metrics):
+                continue
+            value = metrics[col]
+            if value is None:
+                continue
+            # Heart rate keeps its >0 guard (0 bpm is a dropout, not a reading).
+            # Latitude, longitude, elevation and air temperature are legitimately
+            # negative or zero, so a blanket >0 filter would silently drop the
+            # southern hemisphere, sea level and freezing conditions.
+            if key in _HR_KEYS and value <= 0:
+                continue
+            try:
+                samples.append(
+                    TimeSeriesSampleCreate(
+                        id=uuid4(),
+                        user_id=user_id,
+                        source=self.provider_name,
+                        # The DataSource identity is (user_id, device_model, source),
+                        # so omitting this would file these workout samples under a
+                        # device-less data_source row, split from every other
+                        # garmin_connect row. Cached on the client — one request per
+                        # sync run, not per activity.
+                        device_model=device_model,
+                        recorded_at=recorded_at,
+                        value=Decimal(str(value)),
+                        series_type=series_by_key[key],
+                        external_id=str(activity_id),
+                    )
+                )
+            except (TypeError, ValueError, OverflowError):
+                continue
 
     if samples:
         try:

@@ -211,6 +211,16 @@ class GarminConnectClient:
         )
         return result if isinstance(result, dict) else {}
 
+    def get_max_metrics(self, cdate: date) -> list[dict[str, Any]]:
+        """Return max-metrics (VO2max / fitness age) for a single calendar date.
+
+        Garmin only writes this on days with a qualifying activity, so most
+        dates return an empty list. Callers should fetch it once per sync range
+        rather than per-day — see GarminConnect247Data.save_vo2max_for_range.
+        """
+        result = self._call_with_reauth("get_max_metrics", cdate.strftime("%Y-%m-%d"))
+        return result if isinstance(result, list) else []
+
     def get_hrv_data(self, cdate: date) -> dict[str, Any]:
         """Return HRV status data for a calendar date."""
         result = self._call_with_reauth("get_hrv_data", cdate.strftime("%Y-%m-%d"))

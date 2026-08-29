@@ -1,5 +1,36 @@
 from app.schemas.enums import SeriesType
 
+# Activity-details metric key → SeriesType, for per-sample workout rows.
+#
+# Deliberately mirrors garmin/coverage.py::ACTIVITY_SAMPLE_SERIES one-for-one —
+# same eight series, same list[tuple[str, SeriesType]] shape — so the two Garmin
+# providers agree on what a workout sample set contains. Only the source key
+# differs: the webhook API names fields (heartRate, speedMetersPerSecond, ...)
+# while Garmin Connect returns a metricDescriptors index map with directXxx keys.
+#
+# stepsPerMinute on the webhook side is total cadence, so directDoubleCadence
+# (154 for a run) is the match, NOT directRunCadence (77, per-leg).
+#
+# Ingestion is gated on settings.ingest_workout_samples, as it is for garmin and
+# strava — a 9-hour activity is ~8.4k rows PER series.
+ACTIVITY_SAMPLE_SERIES: list[tuple[str, SeriesType]] = [
+    ("directHeartRate", SeriesType.heart_rate),
+    ("directSpeed", SeriesType.speed),
+    ("directDoubleCadence", SeriesType.cadence),
+    ("directPower", SeriesType.power),
+    ("directElevation", SeriesType.elevation),
+    ("directLatitude", SeriesType.latitude),
+    ("directLongitude", SeriesType.longitude),
+    ("directAirTemperature", SeriesType.air_temperature),
+]
+
+# Timestamp column in the same metricDescriptors block.
+ACTIVITY_SAMPLE_TIMESTAMP_KEYS: tuple[str, ...] = (
+    "directTimestamp",
+    "TIMESTAMP",
+    "directTimestampGMT",
+)
+
 # Every other REST provider ships a coverage.py; garmin_connect did not, so
 # GarminConnectStrategy fell through to base_strategy's empty ProviderCoverage()
 # and GET /api/v1/meta/coverage advertised this provider as delivering nothing —
@@ -35,6 +66,11 @@ TIMESERIES: frozenset[SeriesType] = frozenset(
         SeriesType.body_fat_percentage,
         SeriesType.skeletal_muscle_mass,
         SeriesType.lean_body_mass,
+        # get_max_metrics (one request per range — Garmin only recomputes VO2max
+        # after a qualifying activity, so per-day polling would be wasted calls)
+        SeriesType.vo2_max,
+        # get_activity_details, per workout, gated on settings.ingest_workout_samples
+        *(st for _, st in ACTIVITY_SAMPLE_SERIES),
     }
 )
 
