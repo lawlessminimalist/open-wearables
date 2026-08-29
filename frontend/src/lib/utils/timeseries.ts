@@ -1,4 +1,4 @@
-import { formatInTz, DEFAULT_DISPLAY_TZ } from '@/lib/dates';
+import { formatInTz } from '@/lib/dates';
 import type { TimeSeriesSample } from '@/lib/api/types';
 
 /**
@@ -17,7 +17,10 @@ export interface HrChartDataPoint {
  */
 export function prepareHrChartData(
   data: TimeSeriesSample[] | undefined,
-  tz: string = DEFAULT_DISPLAY_TZ
+  // Required on purpose — no default. A defaulted tz silently renders UTC when a
+  // caller forgets to pass it, which is exactly how avgBedtime in
+  // calculateSleepStats shipped wrong. Make the omission a type error instead.
+  tz: string
 ): HrChartDataPoint[] {
   if (!data?.length) return [];
 

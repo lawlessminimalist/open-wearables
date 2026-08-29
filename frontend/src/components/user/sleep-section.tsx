@@ -521,6 +521,11 @@ export function SleepSection({
   dateRange,
   onDateRangeChange,
 }: SleepSectionProps) {
+  // The aggregate stats below (notably avgBedtime) are wall-clock derived, so
+  // they must be computed in the same zone the individual session times render
+  // in — otherwise the summary disagrees with the rows beneath it.
+  const { displayTz } = useDisplayTimezone();
+
   // Cursor-based pagination for sleep sessions
   const pagination = useCursorPagination();
 
@@ -569,8 +574,8 @@ export function SleepSection({
 
   // Calculate aggregate statistics from date-range filtered summaries
   const stats = useMemo(
-    () => calculateSleepStats(sleepSummaries?.data || []),
-    [sleepSummaries]
+    () => calculateSleepStats(sleepSummaries?.data || [], displayTz),
+    [sleepSummaries, displayTz]
   );
 
   // Get displayed sessions from current page data
