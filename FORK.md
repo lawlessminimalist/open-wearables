@@ -206,6 +206,14 @@ specific gaps to compensate for manually:
 | GHCR publishing | `.github/workflows/publish-ghcr.yml` |
 | Local build/deploy | `scripts/build-push.sh`, `make push_local_k3s` |
 | Reconcile skill | `.claude/skills/upstream-reconcile/` |
+| Longevity tracking context | [`LONGEVITY.md`](./LONGEVITY.md) |
+
+[`LONGEVITY.md`](./LONGEVITY.md) records which of this platform's signals carry
+outcome evidence, which are vendor decoration, and the device-vs-population
+calibration offsets that otherwise corrupt any benchmarking. Read it before
+adding a health metric to a dashboard or setting a target on one — several
+prominent wearable numbers (Body Battery, readiness scores, fitness age, SpO2,
+deep-sleep minutes) have no validation behind them at all.
 
 ### `garmin_connect` request budget
 
