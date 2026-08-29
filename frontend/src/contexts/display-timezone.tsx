@@ -2,17 +2,24 @@
  * DisplayTimezone — ephemeral, view-only IANA timezone for rendering UTC
  * timestamps in any user dashboard view.
  *
- *   Default:           "UTC".
+ *   Default:           the viewed user's `User.timezone`, falling back to "UTC"
+ *                      when that is unset. It used to default to "UTC"
+ *                      unconditionally, which meant a Brisbane user's dashboard
+ *                      opened showing every timestamp 10 hours out — a 23:58
+ *                      bedtime rendered as 13:58 — until they touched the
+ *                      picker. The zone the data was recorded in is the only
+ *                      sensible opening view.
  *   Persistence:       localStorage, keyed per user_id (so switching between
  *                      users in the dashboard doesn't drag the previous user's
- *                      preference along).
+ *                      preference along). Only an explicit pick is stored, so
+ *                      the default keeps following User.timezone if it changes.
  *   Decoupled from:    User.timezone on the backend, which controls how the
- *                      backend buckets daily aggregates. Changing the display
- *                      tz never modifies data.
+ *                      backend buckets daily aggregates. It only SEEDS this;
+ *                      changing the display tz never modifies data.
  *
  * Usage:
  *
- *   <DisplayTimezoneProvider userId={user.id}>
+ *   <DisplayTimezoneProvider userId={user.id} userTimezone={user.timezone}>
  *     ...
  *     <TimezoneSelector />
  *     ...
@@ -50,13 +57,14 @@ function storageKey(userId: string | null | undefined): string {
   return `${STORAGE_PREFIX}${userId ?? 'global'}`;
 }
 
-function readStoredTz(userId: string | null | undefined): string {
-  if (typeof window === 'undefined') return DEFAULT_DISPLAY_TZ;
+/** The stored override, or null when the viewer has never picked one. */
+function readStoredTz(userId: string | null | undefined): string | null {
+  if (typeof window === 'undefined') return null;
   try {
     const raw = window.localStorage.getItem(storageKey(userId));
-    return raw && raw.length > 0 ? raw : DEFAULT_DISPLAY_TZ;
+    return raw && raw.length > 0 ? raw : null;
   } catch {
-    return DEFAULT_DISPLAY_TZ;
+    return null;
   }
 }
 
@@ -64,26 +72,40 @@ interface DisplayTimezoneProviderProps {
   children: ReactNode;
   /** Scopes the persisted preference. Pass the user being viewed. */
   userId?: string | null;
+  /**
+   * The viewed user's `User.timezone`. Seeds the display tz when the viewer has
+   * not picked one, so the dashboard opens in the timezone the data was
+   * recorded in rather than UTC. May arrive after first render (the user query
+   * resolves async) — `displayTz` is derived, not stored, so it just re-renders.
+   */
+  userTimezone?: string | null;
 }
 
 export function DisplayTimezoneProvider({
   children,
   userId,
+  userTimezone,
 }: DisplayTimezoneProviderProps) {
-  const [displayTz, setDisplayTzState] = useState<string>(() =>
+  // Only the explicit override is state. The effective zone is derived below,
+  // so a null override transparently follows `userTimezone` as it loads or
+  // changes — and an explicit choice of "UTC" is still distinguishable from
+  // "never chose", which a plain string default could not express.
+  const [overrideTz, setOverrideTz] = useState<string | null>(() =>
     readStoredTz(userId)
   );
 
   // If the userId changes (navigated to a different user), reload the
   // preference for the new scope.
   useEffect(() => {
-    setDisplayTzState(readStoredTz(userId));
+    setOverrideTz(readStoredTz(userId));
   }, [userId]);
+
+  const displayTz = overrideTz ?? userTimezone ?? DEFAULT_DISPLAY_TZ;
 
   const setDisplayTz = useCallback(
     (tz: string) => {
       const next = tz && tz.length > 0 ? tz : DEFAULT_DISPLAY_TZ;
-      setDisplayTzState(next);
+      setOverrideTz(next);
       try {
         window.localStorage.setItem(storageKey(userId), next);
       } catch {
@@ -94,7 +116,8 @@ export function DisplayTimezoneProvider({
   );
 
   const resetDisplayTz = useCallback(() => {
-    setDisplayTzState(DEFAULT_DISPLAY_TZ);
+    // Drop the override so the zone falls back to the user's own timezone.
+    setOverrideTz(null);
     try {
       window.localStorage.removeItem(storageKey(userId));
     } catch {

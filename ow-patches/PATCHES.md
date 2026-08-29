@@ -372,13 +372,28 @@ upstream/main -- <files>`. There's no flag to flip.
   1. **User Timezone** (User.timezone IANA, settable from the profile edit
      dialog or PATCH /users/{id}). Anchors backend daily-bucket dates.
   2. **Display Timezone** (ephemeral, view-only). DropdownMenu picker at the
-     top of the user dashboard. Defaults to UTC. Persisted in localStorage
-     keyed per user_id. Drives `formatInTz(...)` for every UTC datetime
-     rendered in sleep / activity / scores / workout sections plus the
-     HR-during-sleep and HR-during-workout chart axes. Does NOT modify data.
+     top of the user dashboard. **Defaults to the viewed user's User.timezone**,
+     falling back to UTC only when that is unset. Persisted in localStorage
+     keyed per user_id — but only an EXPLICIT pick is stored, so the default
+     keeps tracking User.timezone if it later changes. Drives `formatInTz(...)`
+     for every UTC datetime rendered in sleep / activity / scores / workout
+     sections plus the HR-during-sleep and HR-during-workout chart axes.
+     Does NOT modify data.
   Calendar dates from daily-bucketed summaries (e.g. ActivitySummary.date
   "2026-05-03") are deliberately rendered in UTC anchor so the day label
   ("May 3") stays stable as the developer toggles the display tz.
+- fix_note:           2026-08-29: the display tz previously defaulted to UTC
+  unconditionally, and `DisplayTimezoneProvider` was never passed the user's
+  timezone at all. So a Brisbane user's dashboard opened with every timestamp
+  10 hours out until they touched the picker — a 23:58 bedtime rendered as
+  13:58, and `computeSleepStats`'s avgBedtime (lib/utils/sleep.ts) averaged UTC
+  wall-clock minutes. The per-record maths was always correct; only the seed
+  zone was wrong, which is why it looked like a formatting bug rather than a
+  default-value one. `readStoredTz` now returns `string | null` so "never
+  picked" is distinguishable from "explicitly picked UTC", and the effective
+  zone is DERIVED (`override ?? userTimezone ?? UTC`) rather than stored — so it
+  updates itself when the async user query resolves. The selector's reset item
+  now reads "Reset to {userTimezone}" accordingly.
 - retire_when:        Upstream ships a similar two-timezone model (one stored,
   one display) — would surface as `User.timezone` in upstream + a display-tz
   context provider on the user dashboard.

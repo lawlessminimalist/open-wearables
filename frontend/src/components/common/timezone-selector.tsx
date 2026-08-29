@@ -104,11 +104,14 @@ export function TimezoneSelector({
           );
         })}
 
-        {displayTz !== DEFAULT_DISPLAY_TZ && (
+        {/* resetDisplayTz clears the stored override, so the zone falls back to
+            the user's own timezone — only UTC when that is unset. Offer it
+            whenever the current zone differs from that fallback. */}
+        {displayTz !== (userTimezone || DEFAULT_DISPLAY_TZ) && (
           <>
             <DropdownMenuSeparator />
             <DropdownMenuItem onClick={resetDisplayTz}>
-              Reset to UTC
+              {hasUserTz ? `Reset to ${userTimezone}` : 'Reset to UTC'}
             </DropdownMenuItem>
           </>
         )}

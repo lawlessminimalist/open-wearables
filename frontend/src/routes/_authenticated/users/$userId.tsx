@@ -279,7 +279,7 @@ function UserDetailPage() {
   }
 
   return (
-    <DisplayTimezoneProvider userId={userId}>
+    <DisplayTimezoneProvider userId={userId} userTimezone={user?.timezone}>
       <div className="p-8 space-y-6">
         {/* Header */}
         <div className="flex items-center justify-between">
