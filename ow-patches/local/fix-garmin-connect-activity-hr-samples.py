@@ -153,6 +153,12 @@ def _save_activity_hr_samples(
                     id=uuid4(),
                     user_id=user_id,
                     source=self.provider_name,
+                    # The DataSource identity is (user_id, device_model, source),
+                    # so omitting this would file these workout HR samples under a
+                    # device-less data_source row, split from every other
+                    # garmin_connect row. Cached on the client — one request per
+                    # sync run, not per activity.
+                    device_model=self.client.get_last_used_device_model(),
                     recorded_at=recorded_at,
                     value=Decimal(str(bpm)),
                     series_type=SeriesType.heart_rate,
