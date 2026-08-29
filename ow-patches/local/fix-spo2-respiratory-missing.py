@@ -277,6 +277,13 @@ def load_and_save_all(
                                 id=uuid4(),
                                 user_id=user_id,
                                 provider=self.provider_name,
+                                # FORK DELTA: upstream omits source= here. The
+                                # DataSource identity is (user_id, device_model,
+                                # source), so a None source mints a SECOND
+                                # data_source row per user and splits Ultrahuman
+                                # history across two identities. Carried over from
+                                # fix-hrv-source-unknown's rationale.
+                                source=self.provider_name,
                                 recorded_at=datetime.fromtimestamp(vo2_ts, tz=timezone.utc),
                                 value=Decimal(str(vo2_value)),
                                 series_type=SeriesType.vo2_max,
@@ -294,6 +301,8 @@ def load_and_save_all(
                                 id=uuid4(),
                                 user_id=user_id,
                                 provider=self.provider_name,
+                                # FORK DELTA: see the vo2_max note above.
+                                source=self.provider_name,
                                 recorded_at=datetime.fromtimestamp(active_ts, tz=timezone.utc),
                                 value=Decimal(str(active_value)),
                                 series_type=SeriesType.active_time,

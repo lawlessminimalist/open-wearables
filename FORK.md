@@ -98,8 +98,20 @@ Each of these was silent. None raised, none failed a test at the time.
 5. **A test loading its own copy of a patch** → the rate-limit test registered the
    patch under a different module name and installed it over the real one, both
    polluting other tests and hiding (2).
+6. **A rebase dropping a fork-only keyword argument** → reconciling
+   `fix-spo2-respiratory-missing` onto upstream's rewritten `load_and_save_all`
+   copied upstream's body faithfully and lost `source=` from the `vo2_max` and
+   `active_time` constructors. Since a `data_source` row is keyed on
+   `(user_id, device_model, source)`, those two series began writing to a second,
+   NULL-source row — the provider's history split in half, with no error. The
+   same shape from the other direction: `garmin_connect` set `device_model=` on
+   its `EventRecordCreate` but on none of its eight `TimeSeriesSampleCreate`
+   calls, so one watch resolved to two identities. **A faithful copy of
+   upstream's body is not automatically a correct patch** — the fork's added
+   arguments have to be re-applied deliberately, which is what Phase 4 of the
+   reconcile skill is for.
 
-### The three guard tests
+### The four guard tests
 
 Keep them green; they exist because of the list above.
 
@@ -108,6 +120,7 @@ Keep them green; they exist because of the list above.
 | `backend/tests/test_ow_patches_guard.py` | the directory missing from the image (`OW_PATCHES_REQUIRED`) |
 | `backend/tests/test_ow_patches_installed.py` | a patch that is enabled but not actually installed — asserts every patched symbol's `__module__` is an `_ow_patches*` module, and that the flag dict and the wiring tuples agree |
 | `backend/tests/test_ow_patches_column_drift.py` | a wholesale-replace patch that has dropped an ORM column upstream added |
+| `backend/tests/test_ow_patches_identity_drift.py` | a patch or fork-owned provider that omits `source=` / is inconsistent about `device_model=` on a persisted-row constructor, splitting one device across two `data_source` identities |
 
 ---
 

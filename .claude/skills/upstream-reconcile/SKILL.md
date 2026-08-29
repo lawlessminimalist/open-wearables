@@ -96,11 +96,30 @@ replacement body against upstream's *current* body and answer:
    - de-duplication flags (`is_daily_total`, `prefer_daily_sum`)
    - new joins or LATERALs, N+1 fixes, provider grouping
    - a constant lookup replacing an inline mapping
-3. Verdict: **KEEP AS-IS** / **NEEDS REBASE** (say exactly what to re-apply) /
+3. **What did the FORK add that upstream's body lacks?** This is the reverse of
+   (2) and is the easiest step to skip, because taking upstream's body wholesale
+   *looks* like the careful, faithful thing to do. Every fork-only argument has
+   to be re-applied deliberately. Diff against the **pre-rebase** patch, not just
+   against upstream:
+
+   ```bash
+   git show <last-reconcile-commit>^:ow-patches/local/<id>.py > /tmp/before.py
+   diff /tmp/before.py ow-patches/local/<id>.py
+   ```
+
+   Watch for kwargs that vanish: `source=`, `device_model=`, `is_daily_total=`,
+   `zone_offset=`. These are silent — a persisted-row constructor missing
+   `source=` mints a second `data_source` row (identity is
+   `(user_id, device_model, source)`) and splits the provider's history in half
+   with no error. That happened on 2026-08-29 to `fix-spo2-respiratory-missing`'s
+   `vo2_max` / `active_time` constructors.
+4. Verdict: **KEEP AS-IS** / **NEEDS REBASE** (say exactly what to re-apply) /
    **SHOULD RETIRE** (upstream now does it — check the patch's `retire_when`).
 
 This is independent per patch, so it parallelises well across subagents. Give each
-one the patch file, the upstream file and method, and ask for that verdict.
+one the patch file, the upstream file and method, and ask for that verdict. When a
+subagent's report ends with a "consider also…" note, act on it or write down why
+not — the `vo2_max` split was flagged in exactly such a note and left unactioned.
 
 A dropped column is the classic outcome and is invisible at runtime: every
 consumer reads it with `.get()`, so the API just returns `null` forever.
@@ -110,6 +129,7 @@ Then confirm the patches are not merely loadable but **actually installed**:
 ```bash
 cd backend && uv run pytest tests/test_ow_patches_installed.py \
                            tests/test_ow_patches_column_drift.py \
+                           tests/test_ow_patches_identity_drift.py \
                            tests/test_ow_patches_guard.py -q
 ```
 
