@@ -41,8 +41,10 @@ from uuid import UUID, uuid4
 from fastapi import HTTPException
 
 from app.database import DbSession
+from app.repositories.data_point_series_repository import WriteCounts
 from app.schemas.enums.series_types import SeriesType
 from app.schemas.model_crud.activities.data_point_series import TimeSeriesSampleCreate
+from app.services.timeseries_service import timeseries_service
 
 # Type tokens the Ultrahuman partner API has used for these metrics.
 _SPO2_TYPES = ("spo2", "oxygen_saturation", "blood_oxygen")
@@ -167,17 +169,30 @@ def load_and_save_all(
 ) -> dict[str, Any]:
     """Load and save all 247 data types by fetching daily metrics.
 
-    Rebased onto upstream's current body. Deltas vs upstream: the intraday_types
-    list also feeds the SpO2 / respiratory-rate variants to the normalizer, and a
-    Sleep-object SpO2 fallback emits the single nightly average at the sleep
-    midpoint when no intraday samples are returned. Upstream's vo2_max and
-    active_time (#1242) ingestion blocks are preserved.
+    Fork delta vs upstream: the intraday type list is widened to include the
+    SpO2 / respiratory-rate token variants, and the Sleep object's nightly SpO2
+    average is emitted as a midpoint sample when no intraday series exists.
+    Everything else is upstream's body — see the module docstring.
+
+    Returns:
+        dict[str, Any]: Results containing:
+            - sleep_sessions_synced: WriteCounts - Sleep sessions saved (all inserts)
+            - activity_samples: WriteCounts - Activity samples upserted (inserted + updated)
+            - recovery_days_synced: int - Number of recovery days processed
+            - failed_days: int - Number of days that failed to process
+            - errors: list[dict[str, str]] - List of errors with date and message
+
+        The two saved-row counts are WriteCounts (int subclass) so the sync
+        orchestrator can accumulate them via ``.inserted``/``.updated``.
     """
+
+    # Handle date defaults (last 30 days if not specified)
     if isinstance(start_time, str):
         start_time = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
     if isinstance(end_time, str):
         end_time = datetime.fromisoformat(end_time.replace("Z", "+00:00"))
 
+    # Set defaults if None
     if end_time is None:
         end_time = datetime.now(timezone.utc)
     if start_time is None:
@@ -190,6 +205,9 @@ def load_and_save_all(
         "failed_days": 0,
         "errors": [],
     }
+
+    activity_inserted = 0
+    activity_updated = 0
 
     current_date = datetime.combine(start_time.date(), datetime.min.time(), tzinfo=timezone.utc)
     end_date = datetime.combine(end_time.date(), datetime.min.time(), tzinfo=timezone.utc)
@@ -216,20 +234,24 @@ def load_and_save_all(
                 except Exception as e:
                     day_error = f"Sleep processing failed: {e}"
 
-            # 2. Process Activity Samples
+            # 2. Process Recovery (Not saved to DB yet in this template, but logic is here)
+
+            # 3. Process Activity Samples
             try:
-                # Prepare list for normalization. Pass any of the SpO2 /
-                # respiratory variants the API may return; the normalizer
-                # collapses them into a single canonical bucket.
+                daily_samples: list[TimeSeriesSampleCreate] = []
+
+                # FORK DELTA: pass any of the SpO2 / respiratory variants the API
+                # may return; the normalizer collapses them into a single
+                # canonical bucket. Upstream's list is ["hr", "hrv", "temp", "steps"].
                 sample_inputs = []
                 intraday_types = ["hr", "hrv", "temp", "steps", *_SPO2_TYPES, *_RESPIRATORY_TYPES]
                 for t in intraday_types:
                     if t in items_by_type:
                         sample_inputs.append({"type": t, "values": items_by_type[t].get("values", [])})
 
-                # Sleep summary often carries a single nightly SpO2 average
-                # ({"spo2": {"value": 97}}) when intraday samples aren't exposed.
-                # Emit it as one sample at the sleep midpoint.
+                # FORK DELTA: Sleep summary often carries a single nightly SpO2
+                # average ({"spo2": {"value": 97}}) when intraday samples aren't
+                # exposed. Emit it as one sample at the sleep midpoint.
                 sleep_obj = items_by_type.get("Sleep")
                 if sleep_obj:
                     sleep_spo2 = (sleep_obj.get("spo2") or {}).get("value")
@@ -243,27 +265,23 @@ def load_and_save_all(
 
                 if sample_inputs:
                     normalized_samples = self.normalize_activity_samples(sample_inputs, user_id)
-                    saved_count = self.save_activity_samples(db, user_id, normalized_samples)
-                    results["activity_samples"] += saved_count
+                    daily_samples.extend(self._build_activity_samples(user_id, normalized_samples))
 
-                # VO2 max (single daily value, not a time series)
                 if "vo2_max" in items_by_type:
                     vo2_obj = items_by_type["vo2_max"]
                     vo2_value = vo2_obj.get("value")
                     vo2_ts = vo2_obj.get("day_start_timestamp")
                     if vo2_value and vo2_ts:
-                        recorded_at = datetime.fromtimestamp(vo2_ts, tz=timezone.utc)
-                        ts_sample = TimeSeriesSampleCreate(
-                            id=uuid4(),
-                            user_id=user_id,
-                            provider=self.provider_name,
-                            source=self.provider_name,
-                            recorded_at=recorded_at,
-                            value=Decimal(str(vo2_value)),
-                            series_type=SeriesType.vo2_max,
+                        daily_samples.append(
+                            TimeSeriesSampleCreate(
+                                id=uuid4(),
+                                user_id=user_id,
+                                provider=self.provider_name,
+                                recorded_at=datetime.fromtimestamp(vo2_ts, tz=timezone.utc),
+                                value=Decimal(str(vo2_value)),
+                                series_type=SeriesType.vo2_max,
+                            )
                         )
-                        self.data_point_repo.create(db, ts_sample)
-                        results["activity_samples"] += 1
 
                 # Active time (single daily value in minutes, like vo2_max)
                 if "active_minutes" in items_by_type:
@@ -271,21 +289,22 @@ def load_and_save_all(
                     active_value = active_obj.get("value")
                     active_ts = active_obj.get("day_start_timestamp")
                     if active_value is not None and active_ts:
-                        recorded_at = datetime.fromtimestamp(active_ts, tz=timezone.utc)
-                        self.data_point_repo.create(
-                            db,
+                        daily_samples.append(
                             TimeSeriesSampleCreate(
                                 id=uuid4(),
                                 user_id=user_id,
                                 provider=self.provider_name,
-                                source=self.provider_name,
-                                recorded_at=recorded_at,
+                                recorded_at=datetime.fromtimestamp(active_ts, tz=timezone.utc),
                                 value=Decimal(str(active_value)),
                                 series_type=SeriesType.active_time,
                                 is_daily_total=True,
-                            ),
+                            )
                         )
-                        results["activity_samples"] += 1
+
+                if daily_samples:
+                    counts = timeseries_service.bulk_create_samples(db, daily_samples)
+                    activity_inserted += counts.inserted
+                    activity_updated += counts.updated
             except Exception as e:
                 day_error = f"Activity samples processing failed: {e}"
 
@@ -303,6 +322,9 @@ def load_and_save_all(
             results["errors"].append({"date": date_str, "error": day_error})
 
         current_date += timedelta(days=1)
+
+    results["sleep_sessions_synced"] = WriteCounts(results["sleep_sessions_synced"], 0)
+    results["activity_samples"] = WriteCounts(activity_inserted, activity_updated)
 
     return results
 

@@ -32,8 +32,14 @@ import app  # noqa: F401  (importing app applies the patches)
 _EXPECTED_PATCHED: list[tuple[str, str, str]] = [
     # --- ultrahuman ---
     (
+        # Retargeted 2026-08-29: upstream #1469 (152137fc) deleted
+        # save_activity_samples and replaced it with the pure builder
+        # _build_activity_samples, whose rows the caller bulk-upserts. Note this
+        # case passed green while the patch was broken — monkey-patching CREATES
+        # the attribute, so asserting __module__ cannot notice that upstream
+        # deleted the method. The Ultrahuman provider tests are the real gate.
         "app.services.providers.ultrahuman.data_247",
-        "Ultrahuman247Data.save_activity_samples",
+        "Ultrahuman247Data._build_activity_samples",
         "fix-hrv-source-unknown",
     ),
     (
