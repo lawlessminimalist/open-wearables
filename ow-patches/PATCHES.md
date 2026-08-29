@@ -1,7 +1,8 @@
 # Fork Patches Registry
 
 Source of truth for every place this fork diverges from upstream.
-See `../README.md#fork-patches` for usage. Run `python ow-patches/check_upstream.py`
+See `../FORK.md` for how the patch system works and when to patch versus edit
+directly, and the `upstream-reconcile` skill for the merge procedure. Run `python ow-patches/check_upstream.py`
 to see whether upstream has caught up to any of these.
 
 Upstream: https://github.com/the-momentum/open-wearables
@@ -102,7 +103,7 @@ kubectl -n open-wearables exec deploy/app -- ls /root_project/ow-patches/apply.p
 - symbol:                    SummariesService.get_sleep_summaries
 - what_we_changed:           Compute mean SDNN HRV, respiratory rate, and SpO2 over the sleep window padded by ±30min, populating avg_hrv_sdnn_ms / avg_respiratory_rate / avg_spo2_percent on each SleepSummary record (instead of always-null TODOs). Raw intraday samples remain untouched.
 - retire_when:               get_sleep_summaries response includes avg_hrv_sdnn_ms as a non-null float when intraday SDNN samples exist within the sleep window.
-- retirement_note:           Upstream rewrote get_sleep_summaries to populate avg_hrv_sdnn_ms / avg_respiratory_rate / avg_spo2_percent itself AND added a new avg_hrv_rmssd_ms field. Upstream averages over the EXACT sleep window (we padded ±30min) and does not round SDNN — both are accepted regressions on retirement. Our wholesale-replacement patch was shadowing upstream's new avg_hrv_rmssd_ms (leaving it null), which is why it was retired rather than kept. The marker SLEEP_PHYSIO_WINDOW_PAD never matched upstream (it is unique to our impl), so check_upstream.py could not auto-flag this — see the "Wholesale-replacement audit" note in README#fork-patches.
+- retirement_note:           Upstream rewrote get_sleep_summaries to populate avg_hrv_sdnn_ms / avg_respiratory_rate / avg_spo2_percent itself AND added a new avg_hrv_rmssd_ms field. Upstream averages over the EXACT sleep window (we padded ±30min) and does not round SDNN — both are accepted regressions on retirement. Our wholesale-replacement patch was shadowing upstream's new avg_hrv_rmssd_ms (leaving it null), which is why it was retired rather than kept. The marker SLEEP_PHYSIO_WINDOW_PAD never matched upstream (it is unique to our impl), so check_upstream.py could not auto-flag this — see the shadow-audit phase of the `upstream-reconcile` skill.
 - upstream_equivalent_check: SLEEP_PHYSIO_WINDOW_PAD
 - local_patch_file:          ow-patches/local/fix-hrv-nightly-aggregate.py
 

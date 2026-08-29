@@ -37,7 +37,7 @@ The baseline SHA lives in `ow-patches/.upstream-baseline`. Refresh it with
 `--update-baseline` once every flagged patch has been re-verified after a merge.
 
 Recommendations are advisory only — nothing is auto-retired. All retirements and
-rebases are manual: see ../README.md#fork-patches for the procedure.
+rebases are manual: see ../FORK.md and the `upstream-reconcile` skill.
 """
 
 from __future__ import annotations
@@ -442,7 +442,7 @@ def main() -> int:
     print(
         "Verify manually, then refresh the baseline: python ow-patches/check_upstream.py --update-baseline"
     )
-    print("Retirement/rebase procedure: see README.md#fork-patches.")
+    print("Retirement/rebase procedure: see FORK.md / the upstream-reconcile skill.")
     if shadow_risks:
         print()
         print(

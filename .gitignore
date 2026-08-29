@@ -177,3 +177,8 @@ CLAUDE.local.md
 
 # Exception: AI tool configs that should be tracked
 !.gemini/settings.json
+# Fork: project skills are shared knowledge and must be versioned. Local Claude
+# state (.claude/worktrees, settings.local.json) stays ignored by the rule above.
+!.claude/
+.claude/*
+!.claude/skills/
