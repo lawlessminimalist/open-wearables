@@ -501,3 +501,60 @@ class TestSleepCountIsSessionsNotSamples:
             "physiology sample count must not be added to the sleep session count"
         )
         assert "self._save_sleep_physiology(" in src, "physiology must still be persisted"
+
+
+class TestWorkoutTraceGating:
+    """Heart rate is unconditional; the trace series are storage-gated.
+
+    Gating heart rate too is a correctness bug, not a storage preference:
+    get_daily_intensity_minutes buckets heart_rate PER MINUTE and bins it by HR
+    zone, so ActivitySummary's light/moderate/vigorous minutes depend on sample
+    density. With only the 2-minute daily stream, minute-bucket coverage inside a
+    workout roughly halves (measured 132 -> 64 over 30 days) and intensity
+    minutes are silently undercounted.
+    """
+
+    def test_heart_rate_is_always_ingested(self) -> None:
+        from app.services.providers.garmin_connect.coverage import ACTIVITY_SAMPLE_ALWAYS
+
+        assert SeriesType.heart_rate in ACTIVITY_SAMPLE_ALWAYS
+
+    def test_trace_series_are_not_unconditional(self) -> None:
+        """If a trace series creeps into ALWAYS, the 6x row cost returns silently."""
+        from app.services.providers.garmin_connect.coverage import ACTIVITY_SAMPLE_ALWAYS
+
+        traces = {
+            SeriesType.speed,
+            SeriesType.cadence,
+            SeriesType.power,
+            SeriesType.elevation,
+            SeriesType.latitude,
+            SeriesType.longitude,
+            SeriesType.air_temperature,
+        }
+        assert not (traces & ACTIVITY_SAMPLE_ALWAYS)
+
+    def test_coverage_only_advertises_what_it_writes(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Advertising ungated series is the 'declared, zero rows' bug this provider already shipped."""
+        import importlib
+
+        from app.config import settings as cfg
+
+        monkeypatch.setattr(cfg, "ingest_workout_samples", False)
+        cov = importlib.reload(importlib.import_module("app.services.providers.garmin_connect.coverage"))
+        try:
+            assert SeriesType.heart_rate in cov.TIMESERIES
+            for st in (SeriesType.speed, SeriesType.power, SeriesType.latitude):
+                assert st not in cov.TIMESERIES, f"{st} advertised but never written when flag is off"
+        finally:
+            monkeypatch.undo()
+            importlib.reload(cov)
+
+    def test_series_map_still_matches_the_webhook_provider(self) -> None:
+        """The map documents parity with garmin/coverage.py even though ingestion is split."""
+        from app.services.providers.garmin.coverage import (
+            ACTIVITY_SAMPLE_SERIES as WEBHOOK,
+        )
+        from app.services.providers.garmin_connect.coverage import ACTIVITY_SAMPLE_SERIES as GC
+
+        assert {st for _, st in GC} == {st for _, st in WEBHOOK}
