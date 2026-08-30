@@ -1,3 +1,4 @@
+from app.config import settings
 from app.schemas.enums import SeriesType
 
 # Activity-details metric key → SeriesType, for per-sample workout rows.
@@ -11,8 +12,8 @@ from app.schemas.enums import SeriesType
 # stepsPerMinute on the webhook side is total cadence, so directDoubleCadence
 # (154 for a run) is the match, NOT directRunCadence (77, per-leg).
 #
-# Ingestion is gated on settings.ingest_workout_samples, as it is for garmin and
-# strava — a 9-hour activity is ~8.4k rows PER series.
+# Ingestion is split — see ACTIVITY_SAMPLE_ALWAYS below. A 9-hour activity is
+# ~8.4k rows PER series, so the trace columns are the expensive part.
 ACTIVITY_SAMPLE_SERIES: list[tuple[str, SeriesType]] = [
     ("directHeartRate", SeriesType.heart_rate),
     ("directSpeed", SeriesType.speed),
@@ -23,6 +24,28 @@ ACTIVITY_SAMPLE_SERIES: list[tuple[str, SeriesType]] = [
     ("directLongitude", SeriesType.longitude),
     ("directAirTemperature", SeriesType.air_temperature),
 ]
+
+# Heart rate is ingested UNCONDITIONALLY; the rest only when
+# settings.ingest_workout_samples is on. Two reasons, both measured:
+#
+# 1. The platform aggregates workout heart rate. get_daily_intensity_minutes
+#    buckets heart_rate per minute and bins it by HR zone, so ActivitySummary's
+#    light/moderate/vigorous minutes depend on sample DENSITY. Dropping the
+#    per-second stream leaves only the 2-minute daily stream and roughly halves
+#    minute-bucket coverage inside a workout (measured over 30 days: 132 buckets
+#    -> 64), silently undercounting intensity minutes. heart_rate is also read by
+#    the daily HR aggregates.
+#
+# 2. The other seven have NO consumer anywhere in repositories or services —
+#    they are write-only, reachable solely through the raw /timeseries endpoint —
+#    and they cost 5x the rows (measured 6.00x total across 10 activities, every
+#    one exposing 6 of the 8 columns).
+#
+# This also matches the flag's own documentation in config.py, which describes it
+# as "per-second workout samples (speed, cadence, power, GPS, etc.)" — it never
+# meant heart rate. Gating HR behind it (as this provider did briefly) conflated
+# a storage-cost switch with a data-correctness one.
+ACTIVITY_SAMPLE_ALWAYS: frozenset[SeriesType] = frozenset({SeriesType.heart_rate})
 
 # Timestamp column in the same metricDescriptors block.
 ACTIVITY_SAMPLE_TIMESTAMP_KEYS: tuple[str, ...] = (
@@ -69,8 +92,12 @@ TIMESERIES: frozenset[SeriesType] = frozenset(
         # get_max_metrics (one request per range — Garmin only recomputes VO2max
         # after a qualifying activity, so per-day polling would be wasted calls)
         SeriesType.vo2_max,
-        # get_activity_details, per workout, gated on settings.ingest_workout_samples
-        *(st for _, st in ACTIVITY_SAMPLE_SERIES),
+        # get_activity_details, per workout. Only heart_rate is unconditional;
+        # the trace series are advertised only when they will actually be
+        # written, so /meta/coverage does not promise rows that a deployment
+        # running the default flag never produces — the "advertised, zero rows"
+        # failure this provider already shipped once with SpO2 and respiration.
+        *(st for _, st in ACTIVITY_SAMPLE_SERIES if st in ACTIVITY_SAMPLE_ALWAYS or settings.ingest_workout_samples),
     }
 )
 

@@ -10,8 +10,16 @@ series the official Garmin webhook provider does — see
 garmin_connect/coverage.py::ACTIVITY_SAMPLE_SERIES, which mirrors
 garmin/coverage.py one-for-one. All eight arrive in the SAME activity-details
 response that was already being fetched for HR, so the extra series cost no
-additional requests. Ingestion is now gated on settings.ingest_workout_samples,
-matching garmin and strava; previously this provider ignored that flag.
+additional requests.
+
+Gating (revised 2026-08-30): heart rate is ingested UNCONDITIONALLY; the other
+seven are gated on settings.ingest_workout_samples. Gating HR too — as the first
+cut of this did — was wrong: ActivitySummary derives its light/moderate/vigorous
+minutes by bucketing heart_rate per minute, so dropping the per-second stream
+leaves only the 2-minute daily stream and roughly halves minute-bucket coverage
+inside a workout (measured: 132 -> 64 over 30 days), silently undercounting
+intensity minutes. The flag's own documentation describes it as "per-second
+workout samples (speed, cadence, power, GPS, etc.)" — it never meant heart rate.
 
 Bug
 ---
@@ -60,6 +68,7 @@ from app.config import settings
 from app.database import DbSession
 from app.schemas.model_crud.activities import TimeSeriesSampleCreate
 from app.services.providers.garmin_connect.coverage import (
+    ACTIVITY_SAMPLE_ALWAYS,
     ACTIVITY_SAMPLE_SERIES,
     ACTIVITY_SAMPLE_TIMESTAMP_KEYS,
 )
@@ -135,14 +144,6 @@ def _save_activity_hr_samples(
     """
     from app.services.timeseries_service import timeseries_service  # noqa: PLC0415
 
-    # Gate on the same platform-wide flag garmin and strava honour. This
-    # provider previously ingested workout samples unconditionally, which is why
-    # it accumulated ~214k rows from 94 activities while the flag it was
-    # ignoring defaults to False and is documented as "significantly increases
-    # DB storage".
-    if not settings.ingest_workout_samples:
-        return 0
-
     activity_id = raw_activity.get("activityId")
     avg_hr = raw_activity.get("averageHR")
     duration = int(raw_activity.get("duration") or 0)
@@ -174,7 +175,20 @@ def _save_activity_hr_samples(
         return 0
 
     device_model = self.client.get_last_used_device_model()
-    series_by_key = dict(ACTIVITY_SAMPLE_SERIES)
+
+    # Heart rate always; the trace series only when the storage flag is on.
+    # See ACTIVITY_SAMPLE_ALWAYS in coverage.py for why the split exists —
+    # ActivitySummary's intensity minutes are derived from heart_rate sample
+    # density, so gating HR would silently halve them, whereas the trace series
+    # have no consumer and cost 5x the rows.
+    series_by_key = {
+        key: st
+        for key, st in ACTIVITY_SAMPLE_SERIES
+        if st in ACTIVITY_SAMPLE_ALWAYS or settings.ingest_workout_samples
+    }
+    metric_idx = {k: v for k, v in metric_idx.items() if k in series_by_key}
+    if not metric_idx:
+        return 0
 
     samples: list[TimeSeriesSampleCreate] = []
     for entry in activity_metrics:
