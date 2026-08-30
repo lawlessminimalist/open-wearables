@@ -51,7 +51,21 @@ def _include_in_periodic_pull(caps: Any, live_sync_mode: LiveSyncMode | None, is
     return live_sync_mode == LiveSyncMode.PULL
 
 
-@shared_task
+# acks_late: a provider sync can run for hours on a historical backfill, and
+# Celery's default acks the message on RECEIPT — so a worker killed by a rollout
+# loses the task outright with no redelivery, leaving its sync:status:run:*
+# record frozen at in_progress until its TTL. That is what shows in the UI as a
+# "hanging sync": the run is not slow, it no longer exists. Two year-long
+# backfills were orphaned this way on 2026-08-29.
+#
+# Safe for THIS task specifically because ingest is upsert-based (ON CONFLICT on
+# uq_data_point_series_source_type_time), so a redelivered sync re-runs without
+# duplicating rows. Set per-task rather than globally for that reason — the
+# guarantee is a property of this task, not of the app.
+#
+# Pairs with broker_transport_options["visibility_timeout"] and
+# worker_prefetch_multiplier in celery/core.py; see the comments there.
+@shared_task(acks_late=True)
 def sync_vendor_data(
     user_id: str,
     start_date: str | None = None,

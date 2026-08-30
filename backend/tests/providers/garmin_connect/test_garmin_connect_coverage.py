@@ -80,7 +80,7 @@ class TestHrvKeyRegression:
     """The single highest-cost bug: N requests per sync, zero rows written."""
 
     def test_last_night_avg_is_persisted(self, handler_factory: Any) -> None:
-        h, captured = handler_factory(hrv={"hrv": {"hrvSummary": {"lastNightAvg": 62, "weeklyAvg": 58}}})
+        h, captured = handler_factory(hrv={"hrvSummary": {"lastNightAvg": 62, "weeklyAvg": 58}})
         n = h.save_hrv_for_date(None, uuid4(), date(2026, 8, 18))  # type: ignore[arg-type]
         assert n >= 1, "lastNightAvg must be persisted"
         rmssd = [s for s in captured if s.series_type is SeriesType.heart_rate_variability_rmssd]
@@ -89,27 +89,25 @@ class TestHrvKeyRegression:
 
     def test_old_lastnight_key_no_longer_required(self, handler_factory: Any) -> None:
         """Pre-fix this payload wrote nothing because it looked for 'lastNight'."""
-        h, captured = handler_factory(hrv={"hrv": {"hrvSummary": {"lastNightAvg": 55}}})
+        h, captured = handler_factory(hrv={"hrvSummary": {"lastNightAvg": 55}})
         assert h.save_hrv_for_date(None, uuid4(), date(2026, 8, 18)) == 1  # type: ignore[arg-type]
         assert captured
 
     def test_weekly_avg_is_not_written_as_sdnn(self, handler_factory: Any) -> None:
         """weeklyAvg is a rolling RMSSD average, not an SDNN measurement."""
-        h, captured = handler_factory(hrv={"hrv": {"hrvSummary": {"lastNightAvg": 60, "weeklyAvg": 58}}})
+        h, captured = handler_factory(hrv={"hrvSummary": {"lastNightAvg": 60, "weeklyAvg": 58}})
         h.save_hrv_for_date(None, uuid4(), date(2026, 8, 18))  # type: ignore[arg-type]
         assert not [s for s in captured if s.series_type is SeriesType.heart_rate_variability_sdnn]
 
     def test_intraday_readings_are_persisted(self, handler_factory: Any) -> None:
         h, captured = handler_factory(
             hrv={
-                "hrv": {
-                    "hrvSummary": {"lastNightAvg": 60},
-                    "hrvReadings": [
-                        {"hrvValue": 58, "readingTimeGMT": "2026-08-18T14:05:00.0"},
-                        {"hrvValue": 61, "readingTimeGMT": "2026-08-18T14:10:00.0"},
-                        {"hrvValue": None, "readingTimeGMT": "2026-08-18T14:15:00.0"},
-                    ],
-                }
+                "hrvSummary": {"lastNightAvg": 60},
+                "hrvReadings": [
+                    {"hrvValue": 58, "readingTimeGMT": "2026-08-18T14:05:00.0"},
+                    {"hrvValue": 61, "readingTimeGMT": "2026-08-18T14:10:00.0"},
+                    {"hrvValue": None, "readingTimeGMT": "2026-08-18T14:15:00.0"},
+                ],
             }
         )
         h.save_hrv_for_date(None, uuid4(), date(2026, 8, 18))  # type: ignore[arg-type]
@@ -182,10 +180,16 @@ class TestSleepPhysiology:
         h, captured = handler_factory()
         start = datetime(2026, 8, 18, 12, 0, tzinfo=timezone.utc)
         end = datetime(2026, 8, 18, 20, 0, tzinfo=timezone.utc)
+        # Field names verified against a live Garmin Connect payload 2026-08-29.
+        # The previous fixture used avgSpO2 / avgRespirationValue / avgSleepHRV,
+        # none of which exist in the response — so it asserted the same wrong
+        # shape the code assumed, and the suite stayed green while the provider
+        # wrote nothing. avgOvernightHrv sits at the response ROOT.
         n = h._save_sleep_physiology(
             None,  # type: ignore[arg-type]
             uuid4(),
-            {"avgSpO2": 96, "avgRespirationValue": 14.5, "avgSleepHRV": 63},
+            {"avgOvernightHrv": 63},
+            {"averageSpO2Value": 96, "averageRespirationValue": 14.5},
             start,
             end,
         )
@@ -201,14 +205,14 @@ class TestSleepPhysiology:
         h, captured = handler_factory()
         start = datetime(2026, 8, 18, 12, 0, tzinfo=timezone.utc)
         end = datetime(2026, 8, 18, 20, 0, tzinfo=timezone.utc)
-        h._save_sleep_physiology(None, uuid4(), {"avgSpO2": 96}, start, end)  # type: ignore[arg-type]
+        h._save_sleep_physiology(None, uuid4(), {}, {"averageSpO2Value": 96}, start, end)  # type: ignore[arg-type]
         assert captured[0].recorded_at == datetime(2026, 8, 18, 16, 0, tzinfo=timezone.utc)
 
     def test_missing_fields_emit_nothing(self, handler_factory: Any) -> None:
         h, captured = handler_factory()
         start = datetime(2026, 8, 18, 12, 0, tzinfo=timezone.utc)
         end = datetime(2026, 8, 18, 20, 0, tzinfo=timezone.utc)
-        assert h._save_sleep_physiology(None, uuid4(), {}, start, end) == 0  # type: ignore[arg-type]
+        assert h._save_sleep_physiology(None, uuid4(), {}, {}, start, end) == 0  # type: ignore[arg-type]
         assert captured == []
 
 
@@ -348,3 +352,152 @@ class TestSessionRestoreHydratesDisplayName:
         c = GarminConnectClient()
         c._token_store_path = lambda: tmp_path / "does-not-exist"  # type: ignore[method-assign]
         assert c._try_load_saved_session(self._api({"displayName": "dhlaw"})) is False
+
+
+class TestSleepEpochSeries:
+    """Intraday SpO2 / respiration ride along in the sleep payload we already fetch.
+
+    The official Garmin webhook provider persists both a nightly average and an
+    intraday series for these (see Garmin247Data), so garmin_connect matches that
+    shape rather than storing only the average.
+    """
+
+    def _raw(self) -> dict:
+        # Shapes verified against a live payload 2026-08-29.
+        return {
+            "wellnessEpochSPO2DataDTOList": [
+                {"epochTimestamp": "2026-08-18T14:05:00.0", "spo2Reading": 96},
+                {"epochTimestamp": "2026-08-18T14:06:00.0", "spo2Reading": 94},
+                {"epochTimestamp": "2026-08-18T14:07:00.0", "spo2Reading": 0},
+            ],
+            "wellnessEpochRespirationDataDTOList": [
+                {"startTimeGMT": 1787836000000, "respirationValue": 15.0},
+                {"startTimeGMT": 1787836120000, "respirationValue": -1.0},
+            ],
+        }
+
+    def test_intraday_spo2_and_respiration_persisted(self, handler_factory: Any) -> None:
+        h, captured = handler_factory()
+        out = h._build_sleep_epoch_samples(uuid4(), self._raw(), "EPIX Gen2")
+        spo2 = [s for s in out if s.series_type is SeriesType.oxygen_saturation]
+        resp = [s for s in out if s.series_type is SeriesType.respiratory_rate]
+        # The 0 SpO2 and -1 respiration are Garmin's "not measured" sentinels.
+        assert len(spo2) == 2, "non-positive SpO2 readings must be skipped"
+        assert len(resp) == 1, "non-positive respiration readings must be skipped"
+        assert {int(s.value) for s in spo2} == {96, 94}
+
+    def test_hrv_not_duplicated_from_sleep_payload(self, handler_factory: Any) -> None:
+        """hrvData duplicates get_hrv_data's hrvReadings; only one source writes it."""
+        h, _ = handler_factory()
+        raw = self._raw() | {"hrvData": [{"value": 44.0, "startGMT": 1787836000000}]}
+        out = h._build_sleep_epoch_samples(uuid4(), raw, None)
+        assert not [s for s in out if s.series_type is SeriesType.heart_rate_variability_rmssd]
+
+    def test_device_model_is_stamped(self, handler_factory: Any) -> None:
+        """Identity is (user_id, device_model, source) — omitting it splits the data source."""
+        h, _ = handler_factory()
+        out = h._build_sleep_epoch_samples(uuid4(), self._raw(), "EPIX Gen2")
+        assert out
+        assert all(s.device_model == "EPIX Gen2" for s in out)
+
+
+class TestPayloadKeysMatchReality:
+    """Guard the bug class itself: fixtures that agree with the code but not Garmin.
+
+    The previous suite asserted avgSpO2 / avgRespirationValue / avgSleepHRV and a
+    {"hrv": {...}} wrapper. None exist in a real response, so code and fixture
+    shared one wrong assumption and the suite stayed green while the provider
+    wrote zero rows for months. These pin the keys actually observed on the wire.
+    """
+
+    LIVE_SLEEP_DTO_KEYS = {"averageSpO2Value", "averageRespirationValue"}
+    LIVE_SLEEP_ROOT_KEYS = {"avgOvernightHrv", "wellnessEpochSPO2DataDTOList", "wellnessEpochRespirationDataDTOList"}
+    LIVE_HRV_ROOT_KEYS = {"hrvSummary", "hrvReadings"}
+
+    def test_sleep_physiology_reads_the_live_keys(self, handler_factory: Any) -> None:
+        h, captured = handler_factory()
+        start = datetime(2026, 8, 18, 12, 0, tzinfo=timezone.utc)
+        end = datetime(2026, 8, 18, 20, 0, tzinfo=timezone.utc)
+        raw = {k: 50.0 for k in self.LIVE_SLEEP_ROOT_KEYS if k == "avgOvernightHrv"}
+        dto = dict.fromkeys(self.LIVE_SLEEP_DTO_KEYS, 90.0)
+        assert h._save_sleep_physiology(None, uuid4(), raw, dto, start, end) == 3  # type: ignore[arg-type]
+
+    def test_hrv_summary_is_read_from_the_root(self, handler_factory: Any) -> None:
+        """A {"hrv": {...}} wrapper must NOT be required — it does not exist."""
+        h, captured = handler_factory(hrv={"hrvSummary": {"lastNightAvg": 44}})
+        assert h.save_hrv_for_date(None, uuid4(), date(2026, 8, 18)) == 1  # type: ignore[arg-type]
+        assert int(captured[0].value) == 44
+
+
+class TestVo2maxLookback:
+    """get_max_metrics is a SINGLE-DAY endpoint (/maxmet/daily/{d}/{d}).
+
+    Querying only the range end would usually record nothing: Garmin writes a
+    value only after a qualifying activity, so most dates return []. Verified
+    live — 2026-08-05/24/27/28 were all empty while 2026-07-18 returned 50.0.
+    """
+
+    class _Client:
+        def __init__(self, has_value_on: date | None) -> None:
+            self.has_value_on = has_value_on
+            self.queried: list[date] = []
+
+        def get_max_metrics(self, cdate: date) -> list[dict]:
+            self.queried.append(cdate)
+            if cdate == self.has_value_on:
+                return [{"generic": {"vo2MaxPreciseValue": 50.0, "calendarDate": cdate.isoformat()}}]
+            return []
+
+        def get_last_used_device_model(self) -> str | None:
+            return "EPIX Gen2"
+
+    def _handler(self, monkeypatch: pytest.MonkeyPatch, client: Any):  # noqa: ANN202
+        captured: list[Any] = []
+        h = GarminConnect247Data("garmin_connect", "x", client)
+        import app.services.providers.garmin_connect.data_247 as mod
+
+        monkeypatch.setattr(mod.timeseries_service, "bulk_create_samples", lambda _db, s: captured.extend(s))
+        return h, captured
+
+    def test_walks_back_until_a_value_is_found(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        end = date(2026, 8, 28)
+        client = self._Client(has_value_on=date(2026, 8, 25))
+        h, captured = self._handler(monkeypatch, client)
+        assert h.save_vo2max_for_range(None, uuid4(), end) == 1  # type: ignore[arg-type]
+        assert float(captured[0].value) == 50.0
+        # stops at the first hit rather than exhausting the window
+        assert client.queried == [date(2026, 8, 28), date(2026, 8, 27), date(2026, 8, 26), date(2026, 8, 25)]
+
+    def test_stamped_with_garmins_calendar_date_not_the_fetch_date(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client = self._Client(has_value_on=date(2026, 8, 25))
+        h, captured = self._handler(monkeypatch, client)
+        h.save_vo2max_for_range(None, uuid4(), date(2026, 8, 28))  # type: ignore[arg-type]
+        assert captured[0].recorded_at.date() == date(2026, 8, 25)
+
+    def test_request_budget_is_capped(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A user who has not trained must not trigger an unbounded walk back."""
+        import app.services.providers.garmin_connect.data_247 as mod
+
+        client = self._Client(has_value_on=None)
+        h, captured = self._handler(monkeypatch, client)
+        assert h.save_vo2max_for_range(None, uuid4(), date(2026, 8, 28)) == 0  # type: ignore[arg-type]
+        assert captured == []
+        assert len(client.queried) == mod._VO2MAX_LOOKBACK_DAYS
+
+
+class TestSleepCountIsSessionsNotSamples:
+    """results["sleep"] is an item count surfaced in sync status.
+
+    _save_sleep_physiology now writes hundreds of intraday rows per night, so
+    folding its return into the sleep count would report a 7-night sync as
+    ~2800 sleep items.
+    """
+
+    def test_physiology_rows_do_not_inflate_the_sleep_count(self, handler_factory: Any) -> None:
+        import inspect
+
+        src = inspect.getsource(GarminConnect247Data.save_sleep_for_date)
+        assert "saved += self._save_sleep_physiology" not in src, (
+            "physiology sample count must not be added to the sleep session count"
+        )
+        assert "self._save_sleep_physiology(" in src, "physiology must still be persisted"

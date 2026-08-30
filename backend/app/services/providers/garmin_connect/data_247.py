@@ -3,7 +3,7 @@
 import logging
 from collections.abc import Callable
 from contextlib import suppress
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from uuid import UUID, uuid4
 
@@ -28,6 +28,12 @@ from app.utils.structured_logging import log_structured
 logger = logging.getLogger(__name__)
 
 _PROVIDER = "garmin_connect"
+
+# How many days back to probe for a VO2max reading before giving up. Garmin only
+# writes one after a qualifying activity, so a fixed small window finds the
+# current value in 1-3 requests for anyone training weekly, while capping the
+# cost for someone who has not.
+_VO2MAX_LOOKBACK_DAYS = 10
 
 # Map garminconnect sleep level activity values → SleepStageType
 # sleepLevels entries have activityLevel: 0=deep, 1=light, 2=rem, 3=awake
@@ -187,11 +193,16 @@ class GarminConnect247Data(Base247DataTemplate):
             )
             return 0
 
-        saved += self._save_sleep_physiology(db, user_id, dto, start_dt, end_dt)
+        # Physiology rows are counted separately, NOT folded into `saved`.
+        # results["sleep"] is reported as an item count via
+        # sync_vendor_data_task -> provider_result.params["data_247"], and now
+        # that this writes hundreds of intraday epoch rows per night, adding them
+        # here would report a 7-night sync as ~2800 "sleep" items instead of 7.
+        self._save_sleep_physiology(db, user_id, raw, dto, start_dt, end_dt)
         return saved
 
     def _save_sleep_physiology(
-        self, db: DbSession, user_id: UUID, dto: dict, start_dt: datetime, end_dt: datetime
+        self, db: DbSession, user_id: UUID, raw: dict, dto: dict, start_dt: datetime, end_dt: datetime
     ) -> int:
         """Persist the nightly physiology averages carried in the sleep payload.
 
@@ -202,18 +213,25 @@ class GarminConnect247Data(Base247DataTemplate):
         each other on the (data_source, series_type, recorded_at) upsert key.
         """
         midpoint = start_dt + (end_dt - start_dt) / 2
+        device_model = self.client.get_last_used_device_model()
 
-        mapping: list[tuple[str, SeriesType]] = [
-            ("avgSpO2", SeriesType.oxygen_saturation),
-            ("avgRespirationValue", SeriesType.respiratory_rate),
+        # Field names verified against a live payload 2026-08-29. The previous
+        # names (avgSpO2 / avgRespirationValue / avgSleepHRV) do not exist in the
+        # response, so every lookup returned None and this method wrote zero rows
+        # on every night since it was added — while coverage.py advertised both
+        # series. avgOvernightHrv sits at the response ROOT, not inside
+        # dailySleepDTO, which is why it is passed in separately below.
+        mapping: list[tuple[dict, str, SeriesType]] = [
+            (dto, "averageSpO2Value", SeriesType.oxygen_saturation),
+            (dto, "averageRespirationValue", SeriesType.respiratory_rate),
             # Garmin's own overnight HRV average. Independent of get_hrv_data, so
             # HRV survives even when that endpoint returns nothing for a date.
-            ("avgSleepHRV", SeriesType.heart_rate_variability_rmssd),
+            (raw, "avgOvernightHrv", SeriesType.heart_rate_variability_rmssd),
         ]
 
         samples: list[TimeSeriesSampleCreate] = []
-        for field, series_type in mapping:
-            value = dto.get(field)
+        for container, field, series_type in mapping:
+            value = container.get(field)
             if value is None:
                 continue
             with suppress(Exception):
@@ -222,16 +240,82 @@ class GarminConnect247Data(Base247DataTemplate):
                         id=uuid4(),
                         user_id=user_id,
                         source=self.provider_name,
-                        device_model=self.client.get_last_used_device_model(),
+                        device_model=device_model,
                         recorded_at=midpoint,
                         value=Decimal(str(value)),
                         series_type=series_type,
                     )
                 )
 
+        samples.extend(self._build_sleep_epoch_samples(user_id, raw, device_model))
+
         if samples:
             timeseries_service.bulk_create_samples(db, samples)
         return len(samples)
+
+    def _build_sleep_epoch_samples(
+        self, user_id: UUID, raw: dict, device_model: str | None
+    ) -> list[TimeSeriesSampleCreate]:
+        """Build intraday SpO2 / respiration / HRV rows from the sleep payload.
+
+        These arrays ride along in the ``get_sleep_data`` response we have
+        already paid for, so they cost no additional authenticated request —
+        which is the binding constraint for this provider. The official Garmin
+        webhook provider persists the same series from /pulseOx and /respiration
+        as an average PLUS an intraday series (see Garmin247Data), so this
+        mirrors that shape rather than inventing one.
+
+        Non-positive readings are skipped, matching the webhook parser: Garmin
+        uses them as "not measured" sentinels.
+        """
+        out: list[TimeSeriesSampleCreate] = []
+
+        def _add(recorded_at: datetime, value: float | int | None, series_type: SeriesType) -> None:
+            if value is None or value <= 0:
+                return
+            with suppress(Exception):
+                out.append(
+                    TimeSeriesSampleCreate(
+                        id=uuid4(),
+                        user_id=user_id,
+                        source=self.provider_name,
+                        device_model=device_model,
+                        recorded_at=recorded_at,
+                        value=Decimal(str(value)),
+                        series_type=series_type,
+                    )
+                )
+
+        for entry in raw.get("wellnessEpochSPO2DataDTOList") or []:
+            ts = entry.get("epochTimestamp")
+            if not ts:
+                continue
+            with suppress(Exception):
+                recorded_at = datetime.fromisoformat(str(ts)).replace(tzinfo=timezone.utc)
+                _add(recorded_at, entry.get("spo2Reading"), SeriesType.oxygen_saturation)
+
+        for entry in raw.get("wellnessEpochRespirationDataDTOList") or []:
+            epoch_ms = entry.get("startTimeGMT")
+            if epoch_ms is None:
+                continue
+            with suppress(Exception):
+                recorded_at = datetime.fromtimestamp(float(epoch_ms) / 1000.0, tz=timezone.utc)
+                _add(recorded_at, entry.get("respirationValue"), SeriesType.respiratory_rate)
+
+        # NOTE the sleep payload also carries an "hrvData" array, but it is the
+        # same readings at the same timestamps as get_hrv_data's "hrvReadings"
+        # (verified 2026-08-29: 93 entries, identical epochs), which
+        # save_hrv_for_date already persists. Ingesting both would build
+        # duplicate objects for the upsert to discard. The nightly
+        # avgOvernightHrv average above is kept as the documented fallback for
+        # when get_hrv_data returns nothing.
+        #
+        # Consolidation opportunity, deliberately not taken here: because
+        # avgOvernightHrv == hrvSummary.lastNightAvg and hrvData == hrvReadings,
+        # the whole get_hrv_data per-day call could be dropped in favour of this
+        # payload, saving one authenticated request per synced day. That is a
+        # behavioural change to the sync task list and deserves its own review.
+        return out
 
     # -------------------------------------------------------------------------
     # Heart Rate
@@ -424,6 +508,61 @@ class GarminConnect247Data(Base247DataTemplate):
     # Body Composition
     # -------------------------------------------------------------------------
 
+    def save_vo2max_for_range(self, db: DbSession, user_id: UUID, end_date: date) -> int:
+        """Fetch and save the current VO2max, without a per-day loop.
+
+        Garmin recomputes VO2max only after a qualifying run/ride, so the
+        underlying endpoint (/metrics/maxmet/daily/{d}/{d}) returns [] on most
+        dates — checked live: 2026-08-05, -24, -27 and -28 were all empty while
+        2026-07-18 (a trail run) returned 50.0. Querying only ``end_date`` would
+        therefore usually record nothing at all, and a year-long backfill would
+        capture at most one point.
+
+        So walk backwards from end_date until a value is found, capped at
+        _VO2MAX_LOOKBACK_DAYS requests. That bounds the cost — typically 1-3
+        calls, never more than the cap — instead of multiplying by the window
+        size, which is the constraint that got this provider rate-limited.
+        Only the most recent value is needed: VO2max is a slow-moving estimate
+        and the series is an AVG aggregation, not a daily total.
+
+        The sample is stamped with the calendarDate Garmin attributes it to,
+        which can predate end_date, rather than with the fetch date.
+        """
+        entries: list[dict] = []
+        for back in range(_VO2MAX_LOOKBACK_DAYS):
+            entries = self.client.get_max_metrics(end_date - timedelta(days=back))
+            if entries:
+                break
+
+        samples: list[TimeSeriesSampleCreate] = []
+        for entry in entries:
+            generic = entry.get("generic") or {}
+            value = generic.get("vo2MaxPreciseValue") or generic.get("vo2MaxValue")
+            cal_date = generic.get("calendarDate")
+            if value is None or not cal_date:
+                continue
+            with suppress(Exception):
+                recorded_at = datetime.strptime(cal_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                samples.append(
+                    TimeSeriesSampleCreate(
+                        id=uuid4(),
+                        user_id=user_id,
+                        source=self.provider_name,
+                        device_model=self.client.get_last_used_device_model(),
+                        recorded_at=recorded_at,
+                        value=Decimal(str(value)),
+                        series_type=SeriesType.vo2_max,
+                        # No is_daily_total: vo2_max aggregates as AVG, and
+                        # daily_total_flag returns None for anything non-SUM, so
+                        # passing it would be a dead expression that reads as
+                        # meaningful.
+                    )
+                )
+
+        if samples:
+            timeseries_service.bulk_create_samples(db, samples)
+        return len(samples)
+
     def save_body_composition(self, db: DbSession, user_id: UUID, start_date: date, end_date: date) -> int:
         """Fetch and save body composition data for a date range."""
         raw = self.client.get_body_composition(start_date, end_date)
@@ -495,13 +634,22 @@ class GarminConnect247Data(Base247DataTemplate):
         sample — while still spending one authenticated request per day inside
         the rate-limited sync loop.
 
+        That fix corrected the inner key but left the OUTER one wrong:
+        ``hrvSummary`` sits at the response root, not under ``raw["hrv"]``, so
+        the lookup still resolved to {} and HRV stayed at zero on every sync
+        (verified against a live payload 2026-08-29 — the response has keys
+        userProfilePk / hrvSummary / hrvReadings and no "hrv" wrapper).
+
         ``weeklyAvg`` is deliberately NOT persisted as SDNN: it is a rolling
         average of the same RMSSD-based metric, not an SDNN measurement, and
         writing it to heart_rate_variability_sdnn mislabelled the data.
         """
         raw = self.client.get_hrv_data(cdate)
-        hrv_data: dict = raw.get("hrv") or {}
-        summary: dict = hrv_data.get("hrvSummary") or {}
+        # Read from the root, but tolerate a wrapped payload rather than silently
+        # writing zero rows again if a garminconnect release reintroduces one:
+        # this exact lookup has already been wrong twice.
+        body: dict = raw.get("hrv") or raw
+        summary: dict = body.get("hrvSummary") or {}
         midnight = datetime(cdate.year, cdate.month, cdate.day, tzinfo=timezone.utc)
 
         samples: list[TimeSeriesSampleCreate] = []
@@ -532,7 +680,7 @@ class GarminConnect247Data(Base247DataTemplate):
 
         # Per-reading intraday RMSSD (roughly 5-minute cadence overnight). Already
         # in the response we just paid for, so this costs no extra request.
-        for reading in hrv_data.get("hrvReadings") or []:
+        for reading in body.get("hrvReadings") or []:
             value = reading.get("hrvValue")
             ts = reading.get("readingTimeGMT") or reading.get("readingTimeLocal")
             if value is None or not ts:
@@ -591,6 +739,7 @@ class GarminConnect247Data(Base247DataTemplate):
             "daily_stats": 0,
             "stress": 0,
             "hrv": 0,
+            "vo2_max": 0,
         }
 
         per_day_tasks: dict[str, Callable[[date], int]] = {
@@ -627,6 +776,20 @@ class GarminConnect247Data(Base247DataTemplate):
                 "error",
                 "Failed to sync body composition data",
                 action="garmin_connect_body_comp_sync_error",
+                error=str(exc),
+                user_id=str(user_id),
+            )
+
+        # VO2max likewise fetched once, not per-day — see save_vo2max_for_range.
+        try:
+            results["vo2_max"] = self.save_vo2max_for_range(db, user_id, end_date)
+        except Exception as exc:
+            results["vo2_max"] = 0
+            log_structured(
+                self.logger,
+                "error",
+                "Failed to sync VO2max data",
+                action="garmin_connect_vo2max_sync_error",
                 error=str(exc),
                 user_id=str(user_id),
             )

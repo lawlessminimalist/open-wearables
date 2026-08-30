@@ -223,6 +223,8 @@ kubectl -n open-wearables exec deploy/app -- ls /root_project/ow-patches/apply.p
 - what_we_changed:           After saving each Garmin Connect workout, fetch `client.get_activity_details(activity_id)` and persist its `activityDetailMetrics` HR column as additional `heart_rate` time-series samples. The daily HR endpoint is 2-min sampled and undersamples workout peaks (e.g. May 3 trail run reported max 186 by Garmin but stored max 179). Skips workouts with no HR or under 5 minutes; per-activity errors are caught so one bad activity can't poison the sync.
 - retire_when:               GarminConnectWorkouts.load_data calls a per-activity HR-detail endpoint and persists per-second (or sub-minute) heart_rate samples for each workout. Marker: presence of `get_activity_details` (or `activityDetailMetrics`) anywhere in backend/app/services/providers/garmin_connect/.
 - upstream_equivalent_check: backend/app/services/providers/garmin_connect/::activityDetailMetrics
+- rebased_note:              2026-08-29: WIDENED from HR-only to the full webhook-parity metric set, and GATED. The activity-details response already being fetched carries 26 columns; only `directHeartRate` was read. It now persists the same eight series the official webhook provider does, driven by garmin_connect/coverage.py::ACTIVITY_SAMPLE_SERIES which mirrors garmin/coverage.py one-for-one — so the two Garmin providers agree on what a workout sample set contains. Zero additional requests: same response, more columns. ALSO now honours `settings.ingest_workout_samples` like garmin and strava; this provider previously ignored that platform flag, which is why it accumulated ~214k rows from 94 activities against a flag documented as "significantly increases DB storage" and defaulting to False. NOTE the >0 guard is applied only to heart rate — latitude, longitude, elevation and air_temperature are legitimately negative or zero, so a blanket filter would drop the southern hemisphere, sea level and freezing conditions.
+- fork_rule_violation:       ⚠ This patch targets `garmin_connect/`, which is FORK-OWNED — FORK.md §2 says never patch a file the fork owns, because it buys every shadowing hazard and none of the conflict benefit. Same for fix-garmin-connect-rate-limit-backoff. Both should be inlined into the provider source; deliberately NOT done in this change to keep a feature PR separate from a refactor, but it is the reason `workouts.py` and `client.py` contain none of this logic.
 - local_patch_file:          ow-patches/local/fix-garmin-connect-activity-hr-samples.py
 
 ---
@@ -330,6 +332,25 @@ kubectl -n open-wearables exec deploy/app -- ls /root_project/ow-patches/apply.p
 - retire_when:               ProviderName.from_source_string resolves "garmin_connect" to ProviderName.GARMIN_CONNECT. Marker: any longest-match / sorted-by-length logic or an explicit alias table inside from_source_string.
 - upstream_equivalent_check: backend/app/schemas/enums/provider.py::key=lambda
 - local_patch_file:          ow-patches/local/fix-provider-prefix-shadowing.py
+
+---
+
+## celery-late-acks
+
+- patch_id:                  celery-late-acks
+- status:                    local_only
+- replacement_kind:          structural
+- upstream_url:              https://github.com/the-momentum/open-wearables
+- file:                      backend/app/integrations/celery/core.py
+- symbol:                    create_celery (conf.update)
+- what_we_changed:           Set `task_acks_late=True` + `task_reject_on_worker_lost=True`, and pinned `broker_transport_options["visibility_timeout"] = 6h`.
+- why:                       Celery's default acks a message on RECEIPT, before the task runs. A long historical backfill killed by a pod rollout is therefore lost outright — no redelivery — and its `sync:status:run:*` Redis record is frozen at `in_progress` until the ~24h TTL. That is what presents in the UI as a "hanging sync": the run is not slow, it no longer exists. Observed 2026-08-29 — two year-long backfills (ultrahuman `pull_3c24a7708dd343c7`, garmin_connect `pull_82a3a6ce18c64874`) started 05:56Z, were orphaned by one of that day's four deploys, and left no trace in any queue: all four queues at depth 0, `unacked` empty, `inspect active/reserved` empty.
+- structural_note:           This is a STRUCTURAL edit to an upstream file, not a runtime patch. Celery config is read once at worker startup, so `apply.py` cannot reach it — and per FORK.md §2 a patch would buy shadowing hazard with no conflict benefit. It will surface as a git conflict on future merges; that is intended.
+- safety:                    Late acks are only safe for idempotent tasks. They are safe here because ingest is upsert-based (`ON CONFLICT` on `uq_data_point_series_source_type_time`), so a redelivered task re-runs without duplicating rows. **`visibility_timeout` MUST stay above the longest task**: with late acks the message is unacked for the task's whole duration, and if the timeout elapses first Redis redelivers it to another worker and the same backfill runs twice concurrently — exactly how garmin_connect got IP rate-limited and then account-locked. Celery's default is 1 hour; a year-long backfill exceeds it.
+- deliberately_not_set:      `task_time_limit` / `task_soft_time_limit`. The worker runs `--pool=threads` (`scripts/start/worker.sh`) and Celery enforces time limits only on the prefork pool, so setting them would be inert config that reads as protection. Bound the provider HTTP calls instead, or move to prefork.
+- deployment:                Pairs with `terminationGracePeriodSeconds: 600` on the celery-worker Deployment (homelab repo). At the previous 30s a backfill had no chance to drain — the 90-day Ultrahuman backfill alone takes ~3m20s.
+- known_gap:                 Nothing reaps stale `sync:status:run:*` records. `gc_stuck_backfills` runs every 3 minutes but only scans `garmin:backfill:*:lock`. Until a reaper exists, an orphaned run stays visible until its TTL.
+- retire_when:               Upstream sets `task_acks_late` (or documents an equivalent restart-safety story) in `create_celery`.
 
 ---
 

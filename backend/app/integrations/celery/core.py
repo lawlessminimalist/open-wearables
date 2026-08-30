@@ -95,12 +95,44 @@ def create_celery() -> Celery:
             # redis-py periodic health check: PING idle pooled connections so a dead one is
             # replaced rather than handed to the next publish/consume.
             "health_check_interval": 30,
+            # MUST stay above the longest-running task, and is only meaningful
+            # alongside the per-task acks_late on sync_vendor_data. With late
+            # acks the message stays unacked for the whole task; if this elapses
+            # first, Redis redelivers it to another worker and the SAME backfill
+            # runs twice concurrently
+            # — which is precisely how garmin_connect got IP rate-limited and
+            # then account-locked. Celery's default is 1 hour, and a year-long
+            # historical backfill exceeds that comfortably.
+            "visibility_timeout": 6 * 3600,
         },
         task_serializer="json",
         accept_content=["json"],
         result_serializer="json",
         timezone="UTC",
         enable_utc=True,
+        # NOTE late acks are set PER-TASK (sync_vendor_data), not globally.
+        # A global task_acks_late would opt in every task that deliberately did
+        # not ask for it — this codebase already sets it individually on nine
+        # tasks — and send_invitation_email_task is not idempotent: a worker
+        # killed after the SMTP send but before the ack would redeliver and send
+        # the invitation twice.
+        #
+        # Also deliberately NOT setting task_time_limit / task_soft_time_limit:
+        # the worker runs --pool=threads (scripts/start/worker.sh) and Celery
+        # enforces time limits only on the prefork pool. Setting them here would
+        # be inert config that reads as protection — the exact failure mode this
+        # fork keeps getting bitten by. Bound the network calls instead.
+        # task_reject_on_worker_lost is omitted for the same reason: it only
+        # fires on prefork child loss (WorkerLostError).
+        #
+        # REQUIRED alongside the per-task acks_late. At the default of 4 the worker
+        # reserves concurrency*4 messages up front and holds them UNACKED while
+        # they queue behind whatever is currently running. A message reserved
+        # behind a multi-hour backfill can therefore sit unacked past the
+        # visibility_timeout above and be redelivered to a second worker — the
+        # concurrent double-run that timeout exists to prevent. Prefetching one
+        # message per thread keeps the unacked window equal to the running task.
+        worker_prefetch_multiplier=1,
         task_default_queue="default",
         task_default_exchange="default",
         result_expires=3 * 24 * 3600,
