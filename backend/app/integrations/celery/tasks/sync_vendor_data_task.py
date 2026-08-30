@@ -4,7 +4,7 @@ from logging import getLogger
 from typing import Any, cast
 from uuid import UUID, uuid4
 
-from celery import shared_task
+from celery import current_task, shared_task
 
 from app.config import settings
 from app.database import SessionLocal
@@ -14,15 +14,32 @@ from app.schemas.auth import LiveSyncMode
 from app.schemas.responses.upload import ProviderSyncResult, SyncVendorDataResult
 from app.schemas.sync_status import SyncSource, SyncStage, SyncStatus
 from app.services.providers.factory import ProviderFactory
+from app.services.sync_cancel_service import SyncCancelledError, clear_cancel, is_cancel_requested
 from app.services.sync_coordination import release_primary, release_stale_primary, try_become_primary
+from app.services.sync_status_service import cancelled as emit_cancelled
 from app.services.sync_status_service import completed, failed, new_run_id, progress, started
 from app.utils.config_utils import format_duration
 from app.utils.context import trace_id_var
+from app.utils.memory_guard import check_memory_budget
 from app.utils.sentry_helpers import log_and_capture_error
 from app.utils.structured_logging import log_structured
 from app.utils.sync_params import build_sync_params
 
 logger = getLogger(__name__)
+
+
+def _current_task_id() -> str | None:
+    """This task's Celery id, or None outside a worker (eager mode, tests).
+
+    Read from current_task rather than binding the task, so the public
+    signature stays identical to upstream's and the reconcile stays a
+    one-line diff instead of a changed call convention.
+    """
+    try:
+        request = current_task.request if current_task else None
+        return str(request.id) if request is not None and request.id else None
+    except Exception:  # noqa: BLE001 - never let telemetry break a sync
+        return None
 
 
 def _emit_sync_status(fn: Any, /, *args: Any, **kwargs: Any) -> None:
@@ -184,6 +201,18 @@ def sync_vendor_data(
                 )
 
                 run_id = new_run_id(prefix="pull")
+
+                # FORK DELTA: guard the worker before starting another provider.
+                #
+                # The threads pool shares one process across every task, so RSS
+                # does NOT reset between them and a previous chunk's footprint
+                # is still present here. A SIGKILL runs no Python at all: no
+                # terminal event, no ack, and with acks_late the message is
+                # redelivered every visibility_timeout to OOM again. Failing
+                # here instead keeps that loop from ever starting, and the
+                # exception reaches the handler below which reports the run.
+                check_memory_budget(f"before {provider_name} sync")
+
                 primary_uuid: UUID | None = None
                 if _linked_primary_user_id:
                     with suppress(ValueError):
@@ -261,8 +290,21 @@ def sync_vendor_data(
                         "is_historical": is_historical,
                         "start_date": start_date,
                         "end_date": end_date,
+                        # FORK DELTA: carried so a cancel request can be matched
+                        # to the Celery task, and so a liveness check can tell a
+                        # run that is still executing from one whose worker died.
+                        # metadata is a free-form dict on SyncStatusEvent, so
+                        # this needs no schema change.
+                        "task_id": _current_task_id(),
                     },
                 )
+
+                # FORK DELTA: cooperative cancellation checkpoint.
+                # Checked per provider rather than mid-provider so a cancelled
+                # run never leaves one provider half-written; see
+                # sync_cancel_service for why this is a flag and not a revoke.
+                if is_cancel_requested(run_id):
+                    raise SyncCancelledError(f"Sync cancelled by request before {provider_name} fetch")
 
                 try:
                     strategy = factory.get_provider(provider_name)
@@ -520,6 +562,42 @@ def sync_vendor_data(
                             primary_user_id=primary_uuid,
                             metadata=completed_metadata,
                         )
+
+                # FORK DELTA: a cancelled run is a reported outcome, not a
+                # failure. Ordered before the generic handler because
+                # SyncCancelled is an Exception and would otherwise be swallowed
+                # by it and reported as an error the user did not cause.
+                except SyncCancelledError as e:
+                    if shared_token and connection.provider_user_id:
+                        release_primary(
+                            provider_name, connection.provider_user_id, user_uuid, shared_token, scope="pull"
+                        )
+                    clear_cancel(run_id)
+                    _emit_sync_status(
+                        emit_cancelled,
+                        user_uuid,
+                        provider_name,
+                        sync_source,
+                        run_id=run_id,
+                        message=str(e),
+                        metadata={"is_historical": is_historical},
+                    )
+                    log_structured(
+                        logger,
+                        "info",
+                        f"Sync from {provider_name} cancelled by request",
+                        provider=provider_name,
+                        task="sync_vendor_data",
+                        user_id=user_id,
+                        run_id=run_id,
+                    )
+                    # Recorded as an outcome, not an error: result.errors drives
+                    # the task's failure reporting and a user-requested stop is
+                    # not a failure of the sync.
+                    result.providers_synced[provider_name] = ProviderSyncResult(
+                        success=False, params={"cancelled": True}
+                    )
+                    continue
 
                 except Exception as e:
                     if shared_token and connection.provider_user_id:

@@ -16,8 +16,10 @@ from app.integrations.celery.tasks import (
     trigger_garmin_backfill_for_type,
 )
 from app.schemas.enums import ProviderName
+from app.schemas.sync_status import SyncStatus
 from app.services import ApiKeyDep
 from app.services.providers.factory import ProviderFactory
+from app.services.sync_cancel_service import get_run_event, request_cancel
 from app.utils.exceptions import UnsupportedProviderError
 from app.utils.sync_params import build_sync_params
 
@@ -412,4 +414,54 @@ def sync_historical_data(
         **({"days": result.days} if result.days is not None else {}),
         **({"start_date": result.start_date} if result.start_date is not None else {}),
         **({"end_date": result.end_date} if result.end_date is not None else {}),
+    }
+
+
+# FORK ADDITION: cancel a pull-provider sync run.
+#
+# Upstream ships a cancel for the Garmin WEBHOOK backfill only
+# (/garmin/users/{user_id}/backfill/cancel). The REST pull providers -- which
+# is every provider garmin_connect and ultrahuman use -- had no cancel at all,
+# so a historical sync that had gone wrong could only be waited out. Upstream
+# PR #1448 adds emit_sync_cancelled to the status service but no endpoint to
+# reach it; this is that endpoint, and it deliberately mirrors the Garmin
+# backfill cancel's shape (409 when there is nothing to cancel, flag in Redis,
+# stops at the next checkpoint) so both behave the same way from the UI.
+@router.post("/sync/runs/{run_id}/cancel")
+def cancel_sync_run(
+    run_id: Annotated[str, Path(description="Run id from the sync status stream, e.g. pull_1e908ac9e49146d0.")],
+    _api_key: ApiKeyDep,
+) -> dict[str, Any]:
+    """Request cancellation of an in-progress sync run.
+
+    Cooperative, not immediate: the task stops at its next provider boundary
+    and emits a CANCELLED terminal event. A provider call already in flight
+    still completes. See sync_cancel_service for why this is a flag rather
+    than a Celery revoke (revoke with terminate=True would kill every other
+    task sharing the threads-pool worker).
+
+    Returns 404 if the run is unknown or its history has expired, and 409 if
+    it has already reached a terminal state.
+    """
+    event = get_run_event(run_id)
+    if event is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No sync run found for run_id {run_id}. It may have expired from the status history.",
+        )
+
+    if event.status != SyncStatus.IN_PROGRESS:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Sync run {run_id} is already {event.status}; nothing to cancel.",
+        )
+
+    request_cancel(run_id)
+
+    return {
+        "success": True,
+        "run_id": run_id,
+        "provider": event.provider,
+        "user_id": str(event.user_id),
+        "message": "Cancel requested. The run will stop at its next provider checkpoint.",
     }
