@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Literal
 from uuid import UUID
 
+from celery import chain
 from celery import current_app as celery_app
 
 from app.models import EventRecord, User
@@ -19,6 +20,37 @@ from app.services.providers.templates.base_webhook_handler import BaseWebhookHan
 from app.services.providers.templates.base_webhook_service import BaseWebhookService
 from app.services.providers.templates.base_workouts import BaseWorkoutsTemplate
 from app.utils.exceptions import UnsupportedProviderError
+
+# FORK DELTA: window size for a chunked historical sync. 30 days keeps a chunk
+# well inside broker_transport_options["visibility_timeout"] (6h) even for a
+# per-day provider, so a slow chunk is never redelivered mid-flight and run
+# twice concurrently. See start_historical_sync for the full rationale.
+HISTORICAL_CHUNK_DAYS = 30
+
+
+def _chunk_ranges(
+    start: datetime,
+    end: datetime,
+    chunk_days: int,
+) -> list[tuple[datetime, datetime]]:
+    """Split [start, end] into consecutive windows of at most ``chunk_days``.
+
+    Chunks are half-open going forward but the final chunk always ends exactly
+    on ``end``, so no day at either boundary is dropped. Returns a single chunk
+    when the range already fits, and never returns an empty list for a
+    non-empty range.
+    """
+    if end <= start:
+        return [(start, end)]
+
+    ranges: list[tuple[datetime, datetime]] = []
+    cursor = start
+    step = timedelta(days=chunk_days)
+    while cursor < end:
+        chunk_end = min(cursor + step, end)
+        ranges.append((cursor, chunk_end))
+        cursor = chunk_end
+    return ranges
 
 
 @dataclass
@@ -197,21 +229,54 @@ class BaseProviderStrategy(ABC):
         end_date = datetime.now(timezone.utc)
         start_date = end_date - timedelta(days=days)
 
-        task = celery_app.send_task(
-            "app.integrations.celery.tasks.sync_vendor_data_task.sync_vendor_data",
-            kwargs={
-                "user_id": str(user_id),
-                "start_date": start_date.isoformat(),
-                "end_date": end_date.isoformat(),
-                "providers": [self.name],
-                "is_historical": True,
-            },
-        )
+        # FORK DELTA: dispatch one task PER CHUNK instead of a single task
+        # spanning the whole window.
+        #
+        # Upstream sends the entire range as one task. For a year that is a
+        # single Celery message holding one SQLAlchemy session across 365 days
+        # x 5 per-day endpoints plus every activity in the window, and it OOM
+        # -killed the worker (exitCode 137) roughly three minutes in on
+        # 2026-08-30. Because sync_vendor_data sets acks_late, the message was
+        # never acked, so Redis redelivered it every visibility_timeout (6h)
+        # and it OOM'd again -- an unbounded crash loop that could not make
+        # progress and never gave up. Each cycle also orphaned another
+        # sync:status:run:* record at in_progress.
+        #
+        # Chunking fixes the class of problem rather than the instance:
+        #   - memory is bounded by the chunk, not the request
+        #   - every task finishes far inside visibility_timeout
+        #   - a failure costs one chunk, and completed chunks stay committed
+        #
+        # Chained rather than dispatched in parallel, deliberately: request
+        # volume is the binding constraint on the REST providers, and firing
+        # twelve concurrent chunks at Garmin is what FORK.md warns got this
+        # account IP rate-limited and then locked. Immutable signatures (.si)
+        # because each chunk takes explicit kwargs and must not receive the
+        # previous chunk's return value as a positional argument.
+        chunks = _chunk_ranges(start_date, end_date, HISTORICAL_CHUNK_DAYS)
+        signatures = [
+            celery_app.signature(
+                "app.integrations.celery.tasks.sync_vendor_data_task.sync_vendor_data",
+                kwargs={
+                    "user_id": str(user_id),
+                    "start_date": chunk_start.isoformat(),
+                    "end_date": chunk_end.isoformat(),
+                    "providers": [self.name],
+                    "is_historical": True,
+                },
+                immutable=True,
+            )
+            for chunk_start, chunk_end in chunks
+        ]
+        result = chain(*signatures).apply_async()
 
         return HistoricalSyncResult(
-            task_id=task.id,
+            task_id=result.id,
             method="pull_api",
-            message=f"Historical sync queued for {days} days of {self.name} data.",
+            message=(
+                f"Historical sync queued for {days} days of {self.name} data "
+                f"in {len(chunks)} chunk(s) of up to {HISTORICAL_CHUNK_DAYS} days, run sequentially."
+            ),
             days=days,
             start_date=start_date.isoformat(),
             end_date=end_date.isoformat(),
