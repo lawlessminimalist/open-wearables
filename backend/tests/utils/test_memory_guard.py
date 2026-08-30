@@ -16,7 +16,7 @@ from app.utils.memory_guard import MemoryBudgetExceededError, check_memory_budge
 
 
 class TestCheckMemoryBudget:
-    def test_raises_when_rss_crosses_the_threshold(self, monkeypatch):
+    def test_raises_when_rss_crosses_the_threshold(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(memory_guard, "container_memory_limit_bytes", lambda: 704 * 1024 * 1024)
         monkeypatch.setattr(memory_guard, "current_rss_bytes", lambda: 650 * 1024 * 1024)
 
@@ -29,7 +29,7 @@ class TestCheckMemoryBudget:
         assert "before garmin_connect sync" in str(exc.value)
         assert "650" in str(exc.value)
 
-    def test_allows_normal_usage(self, monkeypatch):
+    def test_allows_normal_usage(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """201Mi of 704Mi is the observed idle baseline and must not trip."""
         monkeypatch.setattr(memory_guard, "container_memory_limit_bytes", lambda: 704 * 1024 * 1024)
         monkeypatch.setattr(memory_guard, "current_rss_bytes", lambda: 201 * 1024 * 1024)
@@ -40,7 +40,9 @@ class TestCheckMemoryBudget:
         ("limit", "rss"),
         [(None, 650 * 1024 * 1024), (704 * 1024 * 1024, None), (None, None)],
     )
-    def test_no_ops_when_a_reading_is_unavailable(self, monkeypatch, limit, rss):
+    def test_no_ops_when_a_reading_is_unavailable(
+        self, monkeypatch: pytest.MonkeyPatch, limit: int | None, rss: int | None
+    ) -> None:
         """No cgroup limit (local dev) or unreadable RSS must not invent a failure.
 
         A guard that cannot measure has to stay out of the way, or every macOS
@@ -51,7 +53,7 @@ class TestCheckMemoryBudget:
 
         check_memory_budget("unmeasurable")
 
-    def test_threshold_leaves_headroom_below_the_kernel(self, monkeypatch):
+    def test_threshold_leaves_headroom_below_the_kernel(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """At exactly the limit the kernel wins; the guard must fire before it.
 
         595Mi is 84.5% of 704Mi — under the 85% default, so this pins that the

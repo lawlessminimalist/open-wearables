@@ -53,12 +53,24 @@ class TestHistoricalSyncResult:
 
 
 class TestPullBasedHistoricalSync:
-    """Tests for the default start_historical_sync (pull-based providers)."""
+    """Tests for the default start_historical_sync (pull-based providers).
 
+    FORK DIVERGENCE: upstream dispatches the whole window as ONE task via
+    celery_app.send_task and these tests asserted that. The fork splits the
+    window into HISTORICAL_CHUNK_DAYS chunks dispatched as a sequential chain,
+    because a single year-long task OOM-killed the worker and -- never being
+    acked, per the per-task acks_late -- was redelivered every visibility_timeout
+    to OOM again, an unbounded crash loop. These assert the chunked contract.
+    This is a STRUCTURAL edit to an upstream test file and will surface as a git
+    conflict on future merges; that is intended, so the divergence gets
+    re-examined rather than silently reverted.
+    """
+
+    @patch("app.services.providers.base_strategy.chain")
     @patch("app.services.providers.base_strategy.celery_app")
-    def test_oura_dispatches_pull_sync(self, mock_celery: MagicMock) -> None:
+    def test_oura_dispatches_pull_sync(self, mock_celery: MagicMock, mock_chain: MagicMock) -> None:
         """Pull-based provider should dispatch sync_vendor_data with is_historical=True."""
-        mock_celery.send_task.return_value = MagicMock(id="task-oura-123")
+        mock_chain.return_value.apply_async.return_value = MagicMock(id="task-oura-123")
         user_id = uuid4()
 
         result = OuraStrategy().start_historical_sync(user_id, days=90)
@@ -69,16 +81,24 @@ class TestPullBasedHistoricalSync:
         assert result.days == 90
         assert result.start_date is not None
         assert result.end_date is not None
-        mock_celery.send_task.assert_called_once()
-        call_kwargs = mock_celery.send_task.call_args[1]["kwargs"]
-        assert call_kwargs["user_id"] == str(user_id)
-        assert call_kwargs["providers"] == ["oura"]
-        assert call_kwargs["is_historical"] is True
 
+        # 90 days at 30/chunk is exactly three, each carrying the same
+        # user/provider/is_historical contract upstream asserted.
+        assert mock_celery.signature.call_count == 3
+        for call in mock_celery.signature.call_args_list:
+            call_kwargs = call[1]["kwargs"]
+            assert call_kwargs["user_id"] == str(user_id)
+            assert call_kwargs["providers"] == ["oura"]
+            assert call_kwargs["is_historical"] is True
+            # Immutable: a chunk must not receive the previous chunk's return
+            # value as a positional argument.
+            assert call[1]["immutable"] is True
+
+    @patch("app.services.providers.base_strategy.chain")
     @patch("app.services.providers.base_strategy.celery_app")
-    def test_whoop_dispatches_pull_sync(self, mock_celery: MagicMock) -> None:
+    def test_whoop_dispatches_pull_sync(self, mock_celery: MagicMock, mock_chain: MagicMock) -> None:
         """Another pull-based provider should also use the default implementation."""
-        mock_celery.send_task.return_value = MagicMock(id="task-whoop-456")
+        mock_chain.return_value.apply_async.return_value = MagicMock(id="task-whoop-456")
         user_id = uuid4()
 
         result = WhoopStrategy().start_historical_sync(user_id, days=30)
@@ -86,13 +106,14 @@ class TestPullBasedHistoricalSync:
         assert result.task_id == "task-whoop-456"
         assert result.method == "pull_api"
         assert result.days == 30
-        call_kwargs = mock_celery.send_task.call_args[1]["kwargs"]
-        assert call_kwargs["providers"] == ["whoop"]
+        assert mock_celery.signature.call_count == 1, "30 days is exactly one chunk"
+        assert mock_celery.signature.call_args[1]["kwargs"]["providers"] == ["whoop"]
 
+    @patch("app.services.providers.base_strategy.chain")
     @patch("app.services.providers.base_strategy.celery_app")
-    def test_respects_days_parameter(self, mock_celery: MagicMock) -> None:
+    def test_respects_days_parameter(self, mock_celery: MagicMock, mock_chain: MagicMock) -> None:
         """The date range should span the requested number of days."""
-        mock_celery.send_task.return_value = MagicMock(id="task-123")
+        mock_chain.return_value.apply_async.return_value = MagicMock(id="task-123")
         user_id = uuid4()
 
         result = OuraStrategy().start_historical_sync(user_id, days=7)
@@ -101,6 +122,48 @@ class TestPullBasedHistoricalSync:
         start = datetime.fromisoformat(result.start_date)
         end = datetime.fromisoformat(result.end_date)
         assert (end - start).days == 7
+
+    @patch("app.services.providers.base_strategy.chain")
+    @patch("app.services.providers.base_strategy.celery_app")
+    def test_chunks_tile_the_window_exactly(self, mock_celery: MagicMock, mock_chain: MagicMock) -> None:
+        """Chunk kwargs must cover the whole range with no gap and no overlap.
+
+        A gap silently loses days of history; an overlap re-fetches them, and
+        request volume is the binding constraint that got this account IP
+        rate-limited.
+        """
+        mock_chain.return_value.apply_async.return_value = MagicMock(id="task-1")
+
+        result = OuraStrategy().start_historical_sync(uuid4(), days=95)
+
+        windows = [
+            (
+                datetime.fromisoformat(c[1]["kwargs"]["start_date"]),
+                datetime.fromisoformat(c[1]["kwargs"]["end_date"]),
+            )
+            for c in mock_celery.signature.call_args_list
+        ]
+        assert len(windows) == 4, "95 days at 30/chunk is three full chunks plus a 5-day remainder"
+        assert windows[0][0] == datetime.fromisoformat(result.start_date)
+        assert windows[-1][1] == datetime.fromisoformat(result.end_date)
+        for earlier, later in zip(windows, windows[1:]):
+            assert earlier[1] == later[0], "chunk boundaries must meet exactly"
+
+    @patch("app.services.providers.base_strategy.chain")
+    @patch("app.services.providers.base_strategy.celery_app")
+    def test_chunks_run_sequentially_not_in_parallel(self, mock_celery: MagicMock, mock_chain: MagicMock) -> None:
+        """Chunks must be chained, never fanned out.
+
+        Firing every chunk at a provider concurrently is precisely what got
+        garmin_connect IP rate-limited and then account-locked (FORK.md).
+        """
+        mock_chain.return_value.apply_async.return_value = MagicMock(id="task-1")
+
+        OuraStrategy().start_historical_sync(uuid4(), days=90)
+
+        mock_chain.assert_called_once()
+        assert len(mock_chain.call_args[0]) == 3, "all chunks belong to one chain"
+        mock_celery.send_task.assert_not_called()
 
 
 class TestGarminHistoricalSync:
