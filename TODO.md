@@ -15,7 +15,6 @@ Open work for this fork, kept current as work lands. Read it at session start. F
 
 ## Tooling
 
-- A Grafana dashboard for `ow_agent_*` in the homelab `monitoring` stack, with `last_over_time` panels and `session_id="probe"` excluded.
 - A cost metric for agent telemetry once Claude 5 list prices are pinned somewhere authoritative; guessed prices are worse than none.
 - A `UserPromptSubmit` idle-gap notice that prints the re-cache cost into the turn, as dhlaw-explorations does.
 - Extend `test_ow_patches_column_drift.py` to `self.model.*` and `SeriesType.*` references and result-dict keys, or retire it in favour of the shadow-drift hash.
