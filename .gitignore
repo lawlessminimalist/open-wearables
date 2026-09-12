@@ -182,3 +182,7 @@ CLAUDE.local.md
 !.claude/
 .claude/*
 !.claude/skills/
+# Fork: the project hook that blocks any gh / git push aimed at upstream, and the
+# settings.json that wires it, are shared guardrails. settings.local.json stays ignored.
+!.claude/hooks/
+!.claude/settings.json

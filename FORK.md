@@ -166,6 +166,15 @@ The deployment must set it, or the browser falls back to `http://localhost:8000`
 
 ## 5. Reconciling with upstream
 
+**Nothing from this checkout may reach upstream's tracker.** `gh pr create` on a
+fork defaults its base repo to the PARENT, and on 2026-09-13 that opened a
+fork-internal reconcile PR upstream (their #1611). A PreToolUse hook
+(`.claude/hooks/block-upstream-pr.sh`, wired in `.claude/settings.json`) now denies
+any `gh` segment that names the upstream slug, any `git push` to the upstream
+remote, and any `gh pr create|edit` that lacks an explicit `--repo <fork slug>`.
+`gh repo set-default` is also pinned to the fork per clone, but the hook does not
+rely on it. If a PR body must cite an upstream PR by full slug, use `--body-file`.
+
 Use the **`upstream-reconcile` skill** (`.claude/skills/upstream-reconcile/`).
 It encodes the full procedure, including the shadow audit that `check_upstream.py`
 cannot do on its own.
