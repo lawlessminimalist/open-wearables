@@ -422,3 +422,163 @@ class TestAccountLockedAndAuthAbort:
         assert counters["calls"] == 1, (
             f"a credential failure must abort the run, not retry per (date, type); made {counters['calls']} calls"
         )
+
+
+class TestTypedClassification:
+    """2026-09-13 review: type and HTTP status must win over message substrings."""
+
+    def test_library_too_many_requests_error_is_a_rate_limit(self, patch_module: Any, no_redis: None) -> None:
+        """garminconnect wraps a login 429 in a typed error with text no marker matched."""
+        import garminconnect
+
+        from app.services.providers.garmin_connect.client import GarminConnectRateLimitError
+
+        client = GarminConnectClient()
+
+        class FakeApi:
+            def login(self) -> None:
+                raise garminconnect.GarminConnectTooManyRequestsError(
+                    "Too many login attempts. Please wait a few minutes before trying again."
+                )
+
+        with pytest.raises(GarminConnectRateLimitError):
+            client._login(FakeApi())
+        assert client._blocked_for() > 0
+
+    def test_library_auth_error_is_not_a_rate_limit(self, patch_module: Any, no_redis: None) -> None:
+        import garminconnect
+
+        client = GarminConnectClient()
+
+        class FakeApi:
+            def login(self) -> None:
+                raise garminconnect.GarminConnectAuthenticationError("Authentication failed (401 Unauthorized).")
+
+        with pytest.raises(GarminConnectClientError) as exc_info:
+            client._login(FakeApi())
+        assert "authentication failed" in str(exc_info.value)
+        assert client._blocked_for() == 0
+
+    def test_404_with_429_in_url_is_not_a_rate_limit(
+        self, patch_module: Any, no_redis: None, no_sleep: list[float]
+    ) -> None:
+        import garminconnect
+
+        client = GarminConnectClient()
+        calls = {"count": 0}
+
+        class FakeApi:
+            def get_sleep_data(self, _d: str) -> dict:
+                calls["count"] += 1
+                raise garminconnect.GarminConnectNotFoundError(
+                    "connectapi client error (404): Not Found for url: .../activity/98429123/details"
+                )
+
+        client._api = FakeApi()
+        with pytest.raises(garminconnect.GarminConnectNotFoundError):
+            client._call_with_reauth("get_sleep_data", "2026-08-06")
+        assert calls["count"] == 1, "a deterministic 404 must not be retried"
+        assert client._blocked_for() == 0, "a 404 must not enter cooldown"
+        assert no_sleep == []
+
+    def test_status_code_beats_message_text(self, patch_module: Any) -> None:
+        class Resp:
+            status_code = 404
+
+        exc = RuntimeError("client error for url ...?activityId=429000000")
+        exc.response = Resp()  # type: ignore[attr-defined]
+        assert patch_module._classify_error(exc) == "other"
+        assert patch_module._is_rate_limited("Mobile login returned 429 - IP rate limited by Garmin") is True
+        assert patch_module._is_rate_limited("activity 98429123 not found") is False
+
+    def test_deterministic_error_is_not_retried(self, patch_module: Any, no_redis: None, no_sleep: list[float]) -> None:
+        client = GarminConnectClient()
+        calls = {"count": 0}
+
+        class FakeApi:
+            def get_stats(self, _d: str) -> dict:
+                calls["count"] += 1
+                raise KeyError("sleepMovement")
+
+        client._api = FakeApi()
+        with pytest.raises(KeyError):
+            client._call_with_reauth("get_stats", "2026-08-06")
+        assert calls["count"] == 1
+        assert no_sleep == []
+
+
+class TestCooldownEnforcedOnLiveSession:
+    def test_get_api_refuses_cached_session_while_blocked(self, patch_module: Any, no_redis: None) -> None:
+        from app.services.providers.garmin_connect.client import GarminConnectRateLimitError
+
+        client = GarminConnectClient()
+        client._api = object()
+        client._blocked_until = patch_module.time.monotonic() + 600
+        with pytest.raises(GarminConnectRateLimitError):
+            client._get_api()
+
+    def test_rate_limit_mid_run_drops_cached_session(self, patch_module: Any, no_redis: None) -> None:
+        from app.services.providers.garmin_connect.client import GarminConnectRateLimitError
+
+        client = GarminConnectClient()
+
+        class FakeApi:
+            def get_device_last_used(self) -> dict:
+                raise RuntimeError("Mobile request returned 429 - IP rate limited by Garmin")
+
+        client._api = FakeApi()
+        with pytest.raises(GarminConnectRateLimitError):
+            client._call_with_reauth("get_device_last_used")
+        assert client._api is None, "the session must not survive into the cooldown"
+        with pytest.raises(GarminConnectRateLimitError):
+            client._get_api()
+
+    def test_success_after_strike_clears_the_counter(self, patch_module: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+        deleted: list[tuple] = []
+
+        class FakeRedis:
+            def incr(self, _k: str) -> int:
+                return 1
+
+            def expire(self, _k: str, _t: int) -> None:
+                pass
+
+            def setex(self, _k: str, _t: int, _v: str) -> None:
+                pass
+
+            def ttl(self, _k: str) -> int:
+                return 0
+
+            def delete(self, *keys: str) -> None:
+                deleted.append(keys)
+
+        monkeypatch.setattr(patch_module, "_redis", lambda: FakeRedis())
+        client = GarminConnectClient()
+        client._enter_cooldown()
+        assert client._strike_pending is True
+        client._blocked_until = 0.0  # cooldown elapsed
+        client._api = type("Api", (), {"get_stats": lambda self, _d: {"steps": 1}})()
+        assert client._call_with_reauth("get_stats", "2026-08-06") == {"steps": 1}
+        assert deleted, "strike counter must be cleared on the first success after a strike"
+        assert client._strike_pending is False
+
+
+class TestLoginPersistFailure:
+    def test_token_store_failure_is_a_client_error(
+        self, patch_module: Any, no_redis: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client = GarminConnectClient()
+
+        class FakeApi:
+            class client:  # noqa: N801 - mirrors garminconnect's attribute
+                @staticmethod
+                def dump(_p: str) -> None:
+                    raise PermissionError("read-only file system")
+
+            def login(self) -> None:
+                pass
+
+        monkeypatch.setattr(client, "_token_store_path", lambda: __import__("pathlib").Path("/tmp/garmin-test-tokens"))
+        with pytest.raises(GarminConnectClientError) as exc_info:
+            client._login(FakeApi())
+        assert "could not be saved" in str(exc_info.value)

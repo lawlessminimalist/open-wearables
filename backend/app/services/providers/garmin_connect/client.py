@@ -48,10 +48,13 @@ _BASE_BACKOFF_SECONDS = 2.0
 _MAX_BACKOFF_SECONDS = 30.0
 _JITTER_FRACTION = 0.25
 
-# Substrings that mean "the door is shut", not "your password is wrong".
+# Substrings that mean "the door is shut", not "your password is wrong". These
+# are the FALLBACK for exceptions that carry neither a garminconnect type nor an
+# HTTP status; see _classify_error. "429" is matched digit-bounded (below) so an
+# activity id or a date inside a URL cannot look like a status code.
 _RATE_LIMIT_MARKERS = (
-    "429",
     "too many requests",
+    "too many login attempts",
     "rate limit",
     "rate-limit",
     "ip rate limited",
@@ -79,6 +82,9 @@ _ACCOUNT_LOCKED_MARKERS = (
 )
 
 _RETRY_AFTER_RE = re.compile(r"retry[-\s]?after[\"':=\s]+(\d+)", re.IGNORECASE)
+_STATUS_429_RE = re.compile(r"(?<!\d)429(?!\d)")
+# "API Error 503 - ..." / "HTTP 403 (...)" / "returned 429" / "(404)" as garminconnect phrases them.
+_STATUS_IN_MESSAGE_RE = re.compile(r"(?:API Error|HTTP|status(?: code)?|returned|error)\s*\(?(\d{3})\)?", re.IGNORECASE)
 
 
 class GarminConnectClientError(Exception):
@@ -99,8 +105,9 @@ def _sleep(seconds: float) -> None:
 
 
 def _is_rate_limited(message: str) -> bool:
+    """Message-only heuristic. Prefer _classify_error, which checks type and status first."""
     low = message.lower()
-    return any(marker in low for marker in _RATE_LIMIT_MARKERS)
+    return bool(_STATUS_429_RE.search(message)) or any(marker in low for marker in _RATE_LIMIT_MARKERS)
 
 
 def _is_account_locked(message: str) -> bool:
@@ -121,6 +128,80 @@ def _retry_after_seconds(message: str) -> float | None:
         return float(match.group(1))
     except (TypeError, ValueError):
         return None
+
+
+def _lib_errors() -> Any | None:
+    """The garminconnect exception module, or None if the package is absent (tests)."""
+    try:
+        import garminconnect  # noqa: PLC0415
+
+        return garminconnect
+    except Exception:
+        return None
+
+
+def _status_code(exc: BaseException) -> int | None:
+    """HTTP status carried by a garminconnect/requests exception, if any."""
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int):
+        return status
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    if isinstance(status, int):
+        return status
+    match = _STATUS_IN_MESSAGE_RE.search(str(exc))
+    return int(match.group(1)) if match else None
+
+
+def _classify_error(exc: BaseException) -> str:
+    """Return one of "locked", "rate_limit", "auth", "transient", "other".
+
+    Type and HTTP status win over message text: garminconnect 0.3.x wraps a
+    login-time 429 in GarminConnectTooManyRequestsError with the fixed text
+    "Too many login attempts...", which no substring marker matched, so the
+    cooldown was never recorded on exactly the failure it exists for (found by
+    the 2026-09-13 review). Conversely a 404 whose URL happens to contain "429"
+    is NOT a rate limit, because its status says otherwise.
+    """
+    message = str(exc)
+    if _is_account_locked(message):
+        return "locked"
+
+    lib = _lib_errors()
+    if lib is not None:
+        if isinstance(exc, lib.GarminConnectTooManyRequestsError):
+            return "rate_limit"
+        if isinstance(exc, lib.GarminConnectAuthenticationError):
+            return "auth"
+        if isinstance(exc, lib.GarminConnectNotFoundError):
+            return "other"
+
+    status = _status_code(exc)
+    if status == 429:
+        return "rate_limit"
+    if status == 403 and ("cloudflare" in message.lower() or "bot challenge" in message.lower()):
+        return "rate_limit"
+    if status == 401:
+        return "auth"
+    if status is not None and status >= 500:
+        return "transient"
+    if status is not None:
+        # A definite 4xx that is not 401/429: deterministic, never a global rate limit.
+        return "other"
+
+    # No type, no status: fall back to message heuristics, rate-limit first
+    # because a Cloudflare 403 matches both lists.
+    if _is_rate_limited(message):
+        return "rate_limit"
+    if _is_auth_error(message):
+        return "auth"
+    if lib is not None and isinstance(exc, lib.GarminConnectConnectionError):
+        return "transient"
+    low = message.lower()
+    if any(
+        m in low for m in ("connection reset", "timed out", "timeout", "temporarily unavailable", "connection aborted")
+    ):
+        return "transient"
+    return "other"
 
 
 def _backoff_delay(attempt: int) -> float:
@@ -212,6 +293,11 @@ class GarminConnectClient:
         # Complements the Redis cooldown: this one is checked without any I/O so
         # the remaining ~149 (date, data_type) pairs of a blocked run fail instantly.
         self._blocked_until: float = 0.0
+        # True after this client recorded a strike; the next successful call clears
+        # the Redis strike counter. Without this, a PVC-restored session (which
+        # never goes through _login) let strikes compound across unrelated
+        # incidents for 24h.
+        self._strike_pending: bool = False
 
     def _get_credentials(self) -> tuple[str, str]:
         email = settings.garmin_connect_email
@@ -311,29 +397,54 @@ class GarminConnectClient:
             return remaining
         return cooldown_remaining()
 
+    def _enter_cooldown(self) -> int:
+        cooldown = _record_rate_limit(logger)
+        self._blocked_until = time.monotonic() + cooldown
+        self._strike_pending = True
+        # A cached session must not be reused during the cooldown; drop it so
+        # _get_api's block check is the next thing every caller hits.
+        self._api = None
+        return cooldown
+
+    def _note_success(self) -> None:
+        if self._strike_pending:
+            self._strike_pending = False
+            self._blocked_until = 0.0
+            _clear_rate_limit()
+
     def _login(self, api: Any) -> None:
         try:
             api.login()
         except Exception as exc:
             message = str(exc)
-            if _is_account_locked(message):
-                cooldown = _record_rate_limit(logger)
-                self._blocked_until = time.monotonic() + cooldown
+            kind = _classify_error(exc)
+            if kind == "locked":
+                cooldown = self._enter_cooldown()
                 raise GarminConnectClientError(
                     f"Garmin Connect account is LOCKED — stop retrying and unlock it at "
                     f"garmin.com (password reset). Backing off {cooldown}s: {message}"
                 ) from exc
-            if _is_rate_limited(message):
-                cooldown = _record_rate_limit(logger)
-                self._blocked_until = time.monotonic() + cooldown
+            if kind == "rate_limit":
+                cooldown = self._enter_cooldown()
                 raise GarminConnectRateLimitError(
                     f"Garmin Connect rate limited, backing off {cooldown}s: {message}"
                 ) from exc
             raise GarminConnectClientError(f"Garmin Connect authentication failed: {message}") from exc
 
-        token_path = self._token_store_path()
-        token_path.mkdir(parents=True, exist_ok=True)
-        api.client.dump(str(token_path))
+        # Persisting the session is part of a successful login: if it fails, the
+        # next call would do another full login, so surface it as a client error
+        # (which aborts the run) rather than a bare OSError (which is swallowed
+        # per (date, data_type) pair).
+        try:
+            token_path = self._token_store_path()
+            token_path.mkdir(parents=True, exist_ok=True)
+            api.client.dump(str(token_path))
+        except Exception as exc:
+            raise GarminConnectClientError(
+                f"Garmin Connect login succeeded but the session could not be saved: {exc}"
+            ) from exc
+
+        self._strike_pending = False
         self._blocked_until = 0.0
         _clear_rate_limit()
         log_structured(logger, "info", "Garmin Connect login successful, session saved", provider=_PROVIDER)
@@ -341,16 +452,17 @@ class GarminConnectClient:
     def _get_api(self) -> Any:
         """Return an authenticated garminconnect.Garmin instance, logging in if necessary.
 
-        Refuses to attempt a login while blocked: login is the rate-limited endpoint.
+        The cooldown is checked BEFORE the cached session is handed out: a live
+        session during a cooldown is exactly the request Garmin is refusing.
         """
-        if self._api is not None:
-            return self._api
-
         blocked = self._blocked_for()
         if blocked > 0:
             raise GarminConnectRateLimitError(
-                f"Garmin Connect is in rate-limit cooldown for another {blocked}s; not attempting login"
+                f"Garmin Connect is in rate-limit cooldown for another {blocked}s; not attempting a request"
             )
+
+        if self._api is not None:
+            return self._api
 
         api = self._build_api()
         if not self._try_load_saved_session(api):
@@ -362,8 +474,10 @@ class GarminConnectClient:
         """Call a garminconnect method with rate-limit awareness and bounded backoff.
 
         Ordering matters: rate-limit is checked *before* auth, because a Cloudflare
-        403 matches both and must never trigger a re-login. Genuinely transient
-        errors retry with exponential backoff + jitter, honouring Retry-After.
+        403 matches both and must never trigger a re-login. Only TRANSIENT errors
+        (5xx, network) are retried here; a 404 or a malformed payload is the same
+        on the next attempt, and garminconnect already retries transient failures
+        internally, so every outer attempt multiplies request volume.
         """
         reauthed = False
         last_exc: Exception | None = None
@@ -371,21 +485,21 @@ class GarminConnectClient:
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             api = self._get_api()
             try:
-                return getattr(api, fn_name)(*args, **kwargs)
+                result = getattr(api, fn_name)(*args, **kwargs)
             except GarminConnectRateLimitError:
                 raise
             except Exception as exc:
                 last_exc = exc
                 message = str(exc)
+                kind = _classify_error(exc)
 
-                if _is_rate_limited(message):
-                    cooldown = _record_rate_limit(logger)
-                    self._blocked_until = time.monotonic() + cooldown
+                if kind in ("rate_limit", "locked"):
+                    cooldown = self._enter_cooldown()
                     raise GarminConnectRateLimitError(
                         f"Garmin Connect rate limited during {fn_name}, backing off {cooldown}s: {message}"
                     ) from exc
 
-                if _is_auth_error(message) and not reauthed:
+                if kind == "auth" and not reauthed:
                     reauthed = True
                     log_structured(
                         logger,
@@ -397,7 +511,7 @@ class GarminConnectClient:
                     self._api = None
                     continue
 
-                if attempt >= _MAX_ATTEMPTS:
+                if kind != "transient" or attempt >= _MAX_ATTEMPTS:
                     raise
 
                 delay = _retry_after_seconds(message) or _backoff_delay(attempt)
@@ -413,6 +527,9 @@ class GarminConnectClient:
                     error=message,
                 )
                 _sleep(delay)
+            else:
+                self._note_success()
+                return result
 
         if last_exc is not None:
             raise last_exc
