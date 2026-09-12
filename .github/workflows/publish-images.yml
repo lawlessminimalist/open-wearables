@@ -25,6 +25,12 @@ jobs:
   # a dispatch can't move latest/nightly or overwrite a release/nightly-<sha>
   # tag. TAG is passed via env, not inline ${{ }}, to avoid shell injection.
   validate:
+    # FORK DIVERGENCE (ow-patches: ci-publish-images-upstream-only, structural):
+    # this workflow pushes to upstream's Docker Hub namespace with upstream's
+    # secrets. On a fork it can only fail (it did, nightly, for weeks). Gate on
+    # the owning repository; build and merge `needs` this job, so a skipped
+    # validate skips them too. The fork publishes via publish-ghcr.yml instead.
+    if: github.repository_owner == 'the-momentum'
     runs-on: ubuntu-latest
     steps:
       - name: Validate manual tag

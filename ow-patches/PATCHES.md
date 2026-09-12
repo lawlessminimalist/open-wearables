@@ -367,6 +367,22 @@ kubectl -n open-wearables exec deploy/app -- ls /root_project/ow-patches/apply.p
 
 ---
 
+## ci-publish-images-upstream-only
+
+- patch_id:                  ci-publish-images-upstream-only
+- status:                    local_only
+- replacement_kind:          structural
+- upstream_url:              https://github.com/the-momentum/open-wearables
+- file:                      .github/workflows/publish-images.yml
+- symbol:                    jobs.validate.if
+- what_we_changed:           Added `if: github.repository_owner == 'the-momentum'` to the `validate` job. `build` and `merge` depend on it via `needs`, so on the fork the whole workflow is skipped instead of attempting a push to `themomentum/*` on Docker Hub with secrets the fork does not have.
+- why:                       The workflow is on a nightly `schedule`, which runs on the fork's default branch too. Every night from at least 2026-09-05 it failed at "Log in to Docker Hub" after ~20s — noise in the Actions tab and a standing attempt to publish to someone else's registry. The fork publishes through the fork-owned `publish-ghcr.yml`. The workflow was ALSO disabled in the fork's repository settings (`gh workflow disable`) on 2026-09-13 so it stops before this lands; the `if:` is the durable, merge-visible half.
+- structural_note:           One-line edit to an upstream file; conflicts if upstream touches the `validate` job header, which is intended. Candidate upstream contribution (forks hit this generically) — but open it from a clean upstream clone, never from this checkout (see FORK.md §5 / the block-upstream-pr hook).
+- retire_when:               Upstream gates publish-images.yml on its own repository (any `github.repository`/`repository_owner` condition on the publish jobs), or moves the schedule trigger somewhere forks do not inherit.
+- upstream_equivalent_check: .github/workflows/publish-images.yml::repository_owner
+
+---
+
 # Frontend Patches (Source Edits)
 
 These changes live directly in `frontend/src/` and are **not toggleable** via
