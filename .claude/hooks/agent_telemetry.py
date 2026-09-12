@@ -32,7 +32,10 @@ No cost metric: list prices for the Claude 5 family are not pinned anywhere in
 this repo and a guessed price is worse than none (explorations rule).
 
 Configuration (env, set in .claude/settings.json):
-  OW_AGENT_METRICS_URL          default http://otel.lab.homelab-dhlaw.uk/v1/metrics (the collector's OTLP/HTTP receiver)
+  OW_AGENT_METRICS_URL          default http://otel.lab.homelab-dhlaw.uk:30800/v1/metrics (the collector's
+                                OTLP/HTTP receiver behind Traefik's NodePort; port 80 goes through
+                                klipper-lb, which masquerades the client IP and the tailnet allow
+                                list then denies with 403 — homelab addons/CLAUDE.md, Traefik)
   OW_AGENT_METRICS_FALLBACK_IP  connect here with a Host header if the name does not
                                 resolve (the tailnet name needs an /etc/hosts entry)
   OW_AGENT_METRICS_ORG          optional X-Scope-OrgID, only if the endpoint is ever a tenant-aware gateway
@@ -56,7 +59,7 @@ import urllib.request
 from collections import defaultdict
 from pathlib import Path
 
-DEFAULT_URL = "http://otel.lab.homelab-dhlaw.uk/v1/metrics"
+DEFAULT_URL = "http://otel.lab.homelab-dhlaw.uk:30800/v1/metrics"
 SPOOL_DIR = Path.home() / ".claude" / "ow-agent-telemetry" / "spool"
 DENIALS_DIR = Path.home() / ".claude" / "ow-agent-telemetry" / "denials"
 REPO = "open-wearables"
