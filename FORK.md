@@ -229,9 +229,9 @@ specific gaps to compensate for manually:
 | Symbol-level drift, registry lint, recorded method hashes | `ow-patches/check_upstream.py`, `ow-patches/symbol_hash.py`, `ow-patches/.upstream-symbols.json` |
 | Fork-owned CI for the above | `.github/workflows/ow-patches.yml` |
 | Harness traps, open work, what moved | `.claude/HARNESS-NOTES.md`, `TODO.md`, `CHANGELOG.md` |
-| Longevity tracking context | [`LONGEVITY.md`](./LONGEVITY.md) |
+| Longevity tracking context | `k8s/manifests/open-wearables/LONGEVITY.md` in the homelab repo (moved out of the public fork 2026-09-13) |
 
-[`LONGEVITY.md`](./LONGEVITY.md) records which of this platform's signals carry
+The deployment's `LONGEVITY.md` (homelab repo, `k8s/manifests/open-wearables/`) records which of this platform's signals carry
 outcome evidence, which are vendor decoration, and the device-vs-population
 calibration offsets that otherwise corrupt any benchmarking. Read it before
 adding a health metric to a dashboard or setting a target on one — several

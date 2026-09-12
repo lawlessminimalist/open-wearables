@@ -28,7 +28,7 @@ _PROVIDER = "garmin_connect"
 # underlying garminconnect client walks up to five login strategies per login.
 # Without classification, one 429 turned into ~150 login storms per run, hourly,
 # which is how a soft rate-limit became an IP block and then a LOCKED account
-# (observed 2026-08-20). See LONGEVITY.md / FORK.md section 6 for the request budget.
+# (observed 2026-08-20). See FORK.md section 6 for the request budget.
 # ---------------------------------------------------------------------------
 
 # --- Redis keys -------------------------------------------------------------

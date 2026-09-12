@@ -1,0 +1,98 @@
+{
+  "_upstream_sha": "53de57cade876df104720c0c5be07bbf462a55b1",
+  "fix-activity-summary-utc-bucketing": {
+    "DataPointSeriesRepository.get_daily_active_minutes": {
+      "file": "backend/app/repositories/data_point_series_repository.py",
+      "hash": "d91e10856ab75f88",
+      "kind": "body"
+    },
+    "DataPointSeriesRepository.get_daily_activity_aggregates": {
+      "file": "backend/app/repositories/data_point_series_repository.py",
+      "hash": "d2c5edfa6adcffec",
+      "kind": "body"
+    },
+    "DataPointSeriesRepository.get_daily_intensity_minutes": {
+      "file": "backend/app/repositories/data_point_series_repository.py",
+      "hash": "4c602bab9d494e01",
+      "kind": "body"
+    }
+  },
+  "fix-calories-total-mislabelled": {
+    "SummariesService.get_activity_summaries": {
+      "file": "backend/app/services/summaries_service.py",
+      "hash": "f8c9d94bca69340d",
+      "kind": "signature"
+    }
+  },
+  "fix-health-score-source-priority": {
+    "HealthScoreRepository.get_with_filters": {
+      "file": "backend/app/repositories/health_score_repository.py",
+      "hash": "b8301093f8763ba8",
+      "kind": "body"
+    }
+  },
+  "fix-hrv-source-unknown": {
+    "Ultrahuman247Data._build_activity_samples": {
+      "file": "backend/app/services/providers/ultrahuman/data_247.py",
+      "hash": "835ede186960eae9",
+      "kind": "body"
+    }
+  },
+  "fix-pace-null": {
+    "EventRecordService.get_workouts": {
+      "file": "backend/app/services/event_record_service.py",
+      "hash": "ccf66e8ab352b950",
+      "kind": "body"
+    }
+  },
+  "fix-sleep-stages-missing": {
+    "SummariesService.get_sleep_summaries": {
+      "file": "backend/app/services/summaries_service.py",
+      "hash": "5c1f0df664d9c456",
+      "kind": "signature"
+    },
+    "Ultrahuman247Data.normalize_sleep": {
+      "file": "backend/app/services/providers/ultrahuman/data_247.py",
+      "hash": "fd07527f9e7a080e",
+      "kind": "signature"
+    }
+  },
+  "fix-sleep-summary-utc-bucketing": {
+    "EventRecordRepository._get_sleep_sessions": {
+      "file": "backend/app/repositories/event_record_repository.py",
+      "hash": "6af441554225e4c9",
+      "kind": "body"
+    },
+    "EventRecordRepository.get_sleep_summaries": {
+      "file": "backend/app/repositories/event_record_repository.py",
+      "hash": "46fb872d09620105",
+      "kind": "body"
+    }
+  },
+  "fix-sleep-timezone": {
+    "SummariesService.get_sleep_summaries": {
+      "file": "backend/app/services/summaries_service.py",
+      "hash": "5c1f0df664d9c456",
+      "kind": "signature"
+    }
+  },
+  "fix-spo2-respiratory-missing": {
+    "Ultrahuman247Data.load_and_save_all": {
+      "file": "backend/app/services/providers/ultrahuman/data_247.py",
+      "hash": "f0d9f69a6d1024c3",
+      "kind": "body"
+    },
+    "Ultrahuman247Data.normalize_activity_samples": {
+      "file": "backend/app/services/providers/ultrahuman/data_247.py",
+      "hash": "72c4652f4cd8b069",
+      "kind": "body"
+    }
+  },
+  "fix-summary-timezone-echo": {
+    "SummariesService.get_activity_summaries": {
+      "file": "backend/app/services/summaries_service.py",
+      "hash": "f8c9d94bca69340d",
+      "kind": "signature"
+    }
+  }
+}

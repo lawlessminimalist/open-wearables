@@ -187,3 +187,4 @@ CLAUDE.local.md
 !.claude/hooks/
 !.claude/settings.json
 !.claude/HARNESS-NOTES.md
+!ow-patches/.upstream-symbols.json
