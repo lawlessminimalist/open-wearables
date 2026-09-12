@@ -1,0 +1,29 @@
+ALLOW
+cat > doc.md <<'EOF'
+gh pr create --title foo
+git push upstream main
+the-momentum/open-wearables is upstream
+EOF
+echo written
+====
+ALLOW
+gh pr create --title x \
+  --repo lawlessminimalist/open-wearables \
+  --body-file /tmp/body.md
+====
+DENY
+gh pr create --title x \
+  --body y
+====
+DENY
+cat > doc.md <<'EOF'
+harmless
+EOF
+gh pr create --title x
+====
+ALLOW
+python3 - <<'PY'
+print("gh pr create --title x")
+print("the-momentum/open-wearables")
+PY
+git add -A && git commit -q -m "docs" && git push -q origin feature

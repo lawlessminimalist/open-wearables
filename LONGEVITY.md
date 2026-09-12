@@ -257,7 +257,7 @@ Two things worth pursuing:
   be tested with a Sullivan Nicolaides report before committing.
 - **TruDiagnostic** is the only biological-age test that exports raw data (CpG
   betas, IDATs on request) and ships to Australia. Buy **one**, then recompute
-  locally forever with `pyaging` or `biolearn`. But read §8 first.
+  locally forever with `pyaging` or `biolearn`. But read section 8 first.
 
 **Fasten Health is archived** (verified: `archived: true`, July 2026) and never
 supported a single Australian provider. Do not plan around it.
