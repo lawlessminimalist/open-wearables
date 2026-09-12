@@ -35,6 +35,10 @@ Metrics (labels: session_id, repo, plus per-metric ones):
                                                  a request issuing none lands on tool="none"
   ow_agent_unpriced_requests_total{model}        requests whose model is not in PRICING;
                                                  their cost is absent, never guessed
+  ow_agent_subagent_tokens_total                 tokens reported by finished Agent subagents in
+                                                 their task notifications; outside every other
+                                                 series and unpriced, because the notice has no
+                                                 input/output split
 
 Cost is priced per request from the usage block: input, cache writes at their real
 5m / 1h split, cache reads and output, at the published list prices in PRICING
@@ -62,6 +66,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -141,6 +146,18 @@ def parse_ts(ts: str | None) -> int | None:
         return None
 
 
+_SUBAGENT_TOKENS_RE = re.compile(r"<subagent_tokens>(\d+)</subagent_tokens>")
+
+
+def _subagent_tokens(text: str) -> int:
+    """Tokens a finished subagent reported in its task notification.
+
+    Subagent transcripts are sidechains and are skipped by measure(), so without this the
+    cost of every Agent fan-out is invisible; the harness's completion notice carries the total.
+    """
+    return sum(int(m.group(1)) for m in _SUBAGENT_TOKENS_RE.finditer(text))
+
+
 def measure(transcript: Path) -> dict:
     tokens: dict[tuple[str, str], int] = defaultdict(int)  # (model, type) -> n
     requests: dict[str, int] = defaultdict(int)  # model -> n
@@ -153,6 +170,7 @@ def measure(transcript: Path) -> dict:
     # assistant lines sharing one requestId and one usage block, so usage is taken once
     req_usage: dict[str, tuple[str, int, int, int, int, int]] = {}
     req_tools: dict[str, list[str]] = defaultdict(list)  # requestId -> tool_use names, all lines
+    subagent_tokens = 0  # reported by Agent task notifications; the subagents' own transcripts are sidechains
     first_ts: int | None = None
     last_ts: int | None = None
 
@@ -204,11 +222,14 @@ def measure(transcript: Path) -> dict:
             elif rtype == "user":
                 if isinstance(content, str):
                     prompts += 1
+                    subagent_tokens += _subagent_tokens(content)
                 elif isinstance(content, list):
                     had_text = False
                     for item in content:
                         if not isinstance(item, dict):
                             continue
+                        if item.get("type") == "text":
+                            subagent_tokens += _subagent_tokens(item.get("text") or "")
                         if item.get("type") == "tool_result":
                             name = tool_name_by_id.get(item.get("tool_use_id", ""), "unknown")
                             body = item.get("content")
@@ -249,6 +270,7 @@ def measure(transcript: Path) -> dict:
         "cost": dict(cost),
         "tool_cost": {f"{t}|{m}": usd for (t, m), usd in tool_cost.items()},
         "unpriced": dict(unpriced),
+        "subagent_tokens": subagent_tokens,
         "prompts": prompts,
         "first_ts": first_ts,
         "last_ts": last_ts,
@@ -332,6 +354,14 @@ def build_payload(session_id: str, m: dict, denials: int, branch: str) -> dict:
                 "ow_agent_unpriced_requests_total",
                 [pt(n, _attr("model", k)) for k, n in sorted(m["unpriced"].items())],
                 "requests whose model has no entry in PRICING; their cost is missing from ow_agent_cost_usd",
+            )
+        )
+    if m.get("subagent_tokens"):
+        metrics.append(
+            _sum(
+                "ow_agent_subagent_tokens_total",
+                [pt(m["subagent_tokens"])],
+                "tokens reported by finished subagents; not in ow_agent_tokens_total and unpriced, since the notice gives no type split",
             )
         )
     metrics.append(_sum("ow_agent_prompts_total", [pt(m["prompts"])]))

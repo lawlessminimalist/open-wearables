@@ -62,6 +62,9 @@ LINES = [
     user({"type": "tool_result", "tool_use_id": "t3", "content": "x"}),
     # sidechain (subagent) line, ignored entirely
     {"type": "assistant", "isSidechain": True, "requestId": "r9", "message": {"model": FABLE, "usage": usage(inp=99), "content": [tool_use("t9", "Grep")]}},
+    # two subagent completion notices, as the harness injects them: one as a plain string, one as a text block
+    user("<task-notification><usage><subagent_tokens>87536</subagent_tokens><tool_uses>15</tool_uses></usage></task-notification>"),
+    user({"type": "text", "text": "done <usage><subagent_tokens>1000</subagent_tokens></usage>"}),
 ]
 
 
@@ -80,7 +83,8 @@ def main() -> int:
         ("tokens summed once per request", m["tokens"][f"{FABLE}|cache_write_1h"] == 1_000_000 and m["tokens"][f"{FABLE}|input"] == 1_000_000),
         ("tool calls across streamed lines", m["tool_calls"] == {"Bash": 2, "Read": 1}),
         ("tool errors and bytes by tool", m["tool_errors"] == {"Bash": 1} and m["tool_bytes"] == {"Bash": 5, "Read": 2}),
-        ("prompts", m["prompts"] == 1),
+        ("prompts count the real prompt and the two notices", m["prompts"] == 3),
+        ("subagent tokens summed from the notices", m["subagent_tokens"] == 88536),
         # fable 5.1: 1M input $10 + 1M 1h write $20 + 1M read $0.25 + 1M output $50 = $80.25
         ("fable priced from the table", abs(m["cost"][FABLE] - 80.25) < 1e-9),
         # haiku 4.5 by prefix: 2M input $2 + 1M 5m write $1.25 = $3.25
@@ -101,6 +105,7 @@ def main() -> int:
         ("tool cost points carry tool and model", all({a["key"] for a in d["attributes"]} >= {"tool", "model", "session_id", "repo"} for d in tool_pts) and len(tool_pts) == 3),
         ("cost sums are cumulative monotonic", all(metrics[n]["sum"]["isMonotonic"] and metrics[n]["sum"]["aggregationTemporality"] == 2 for n in ("ow_agent_cost_usd", "ow_agent_tool_cost_usd"))),
         ("denials point present", metrics["ow_agent_upstream_guard_denials_total"]["sum"]["dataPoints"][0]["asInt"] == "3"),
+        ("subagent tokens emitted", metrics["ow_agent_subagent_tokens_total"]["sum"]["dataPoints"][0]["asInt"] == "88536"),
     ]
 
     failed = [name for name, ok in checks if not ok]

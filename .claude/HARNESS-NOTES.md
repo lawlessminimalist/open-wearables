@@ -20,6 +20,14 @@ Series are written only at turn ends, so Grafana panels over `ow_agent_*` must u
 
 Cost is an estimate priced per request from the transcript's usage block at the list prices in the hook's `PRICING` table, with cache writes priced by their real 5m and 1h split. The table is copied from dhlaw-explorations, which read platform.claude.com on 2026-09-03; when a new model appears, add its price there and nowhere else, because a model without an entry is deliberately reported as unpriced rather than guessed. Tool cost attributes the cost of the request that issued a tool call to that tool, split evenly when one request issued several, so it measures what a turn paid to decide on and carry the call, not the tool's runtime.
 
+Subagent usage is invisible to the transcript-based counters because their transcripts are sidechains, so the hook reads the `<subagent_tokens>` figure from each Agent completion notice into `ow_agent_subagent_tokens_total`. It is a plain token count with no type split and is therefore not priced; treat it as a lower bound on what a fan-out cost.
+
+## Shell quirks that cost turns
+
+The Bash tool runs zsh. Three of its expansions turned into wasted round trips during the 2026-09-13 session, each showing up as an "Exit code 1" tool error that had to be read and retried. A bare word beginning with `=` such as `echo =====` is equals-expansion and fails with "not found", so quote separators or use `printf`. An unquoted glob that matches nothing, such as `--include=*.py` or `backend/app/core/*.py` for a directory that does not exist, aborts the whole command with "no matches found" before anything runs, so quote globs passed to `grep` and `find` and check a path exists before globbing under it. And `grep` returns 1 when it finds nothing, which is reported as a failure when it is the last command in a chain, so end exploratory chains with `|| true` or put the grep first.
+
+Two read paths are refused by the permission classifier in this checkout and retrying them wastes a turn each time: shell access into the production database (`kubectl exec` with `psql`) and reading Grafana's admin secret. Read the deployment's data through the `open-wearables` MCP tools or, for schema questions, a throwaway Postgres migrated with the backend's Alembic revisions, which is also how dashboard SQL is validated before commit. If the direct routes are wanted, they need explicit permission rules in `.claude/settings.local.json`, which is the user's decision.
+
 ## Running things
 
 Background commands do not inherit a later `cd`. A background pytest launched from the repo root after the working directory had moved failed to spawn, and a trailing `| tail` masked the exit code, which produced a false "suite green" report. Put the `cd` inside the command and never pipe a test runner's output; assert on its summary line.
