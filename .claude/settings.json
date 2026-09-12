@@ -1,4 +1,7 @@
 {
+  "env": {
+    "GH_REPO": "lawlessminimalist/open-wearables"
+  },
   "hooks": {
     "PreToolUse": [
       {

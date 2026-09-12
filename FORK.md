@@ -168,12 +168,19 @@ The deployment must set it, or the browser falls back to `http://localhost:8000`
 
 **Nothing from this checkout may reach upstream's tracker.** `gh pr create` on a
 fork defaults its base repo to the PARENT, and on 2026-09-13 that opened a
-fork-internal reconcile PR upstream (their #1611). A PreToolUse hook
-(`.claude/hooks/block-upstream-pr.sh`, wired in `.claude/settings.json`) now denies
-any `gh` segment that names the upstream slug, any `git push` to the upstream
-remote, and any `gh pr create|edit` that lacks an explicit `--repo <fork slug>`.
-`gh repo set-default` is also pinned to the fork per clone, but the hook does not
-rely on it. If a PR body must cite an upstream PR by full slug, use `--body-file`.
+fork-internal reconcile PR upstream (their #1611). Three layers now prevent it:
+
+1. `.claude/settings.json` sets `GH_REPO=<fork>` for every command Claude runs, so
+   gh's default target is the fork even when `--repo` is omitted.
+2. Per clone: `git remote set-url --push upstream no_push` (do this after cloning).
+3. A PreToolUse hook (`.claude/hooks/block_upstream_pr.py`, via the
+   `block-upstream-pr.sh` wrapper, wired in `.claude/settings.json`) that parses each
+   Bash command quote-aware, drops heredoc bodies, unwraps `env`/`sudo`/`bash -c`,
+   and denies: any `gh` command naming the upstream slug; any `git push` to the
+   upstream remote or URL; any mutating `gh` command (pr/issue/release write verbs,
+   destructive `gh repo` verbs, mutating `gh api`) without an explicit fork target.
+   It fails closed if python3 is missing. Known false positive: a PR body citing
+   upstream by full slug — use `--body-file`.
 
 Use the **`upstream-reconcile` skill** (`.claude/skills/upstream-reconcile/`).
 It encodes the full procedure, including the shadow audit that `check_upstream.py`
