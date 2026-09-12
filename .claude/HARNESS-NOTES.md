@@ -18,6 +18,8 @@ Never set `OTEL_EXPORTER_OTLP_*` or `CLAUDE_CODE_ENABLE_TELEMETRY` at project sc
 
 Series are written only at turn ends, so Grafana panels over `ow_agent_*` must use `last_over_time(...[range])`, and rate-style panels show nothing for a fresh session because `increase()` needs two samples. Mimir cannot delete a series, so never push a truncated or invented session id. A probe series named `ow_agent_probe_total` with `session_id="probe"` was pushed on 2026-09-13 while validating the endpoint and will remain until retention drops it.
 
+Cost is an estimate priced per request from the transcript's usage block at the list prices in the hook's `PRICING` table, with cache writes priced by their real 5m and 1h split. The table is copied from dhlaw-explorations, which read platform.claude.com on 2026-09-03; when a new model appears, add its price there and nowhere else, because a model without an entry is deliberately reported as unpriced rather than guessed. Tool cost attributes the cost of the request that issued a tool call to that tool, split evenly when one request issued several, so it measures what a turn paid to decide on and carry the call, not the tool's runtime.
+
 ## Running things
 
 Background commands do not inherit a later `cd`. A background pytest launched from the repo root after the working directory had moved failed to spawn, and a trailing `| tail` masked the exit code, which produced a false "suite green" report. Put the `cd` inside the command and never pipe a test runner's output; assert on its summary line.

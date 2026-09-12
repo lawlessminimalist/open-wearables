@@ -40,22 +40,5 @@ jobs:
       - uses: actions/checkout@v4
       - name: Upstream-guard hook cases
         run: python3 .claude/hooks/test_block_upstream_pr.py
-      - name: Telemetry hook parses a synthetic transcript offline
-        env:
-          OW_AGENT_METRICS_DISABLE: "1"
-        run: |
-          printf '%s\n' '{"type":"assistant","requestId":"r1","timestamp":"2026-01-01T00:00:00Z","message":{"model":"m","usage":{"input_tokens":1,"output_tokens":2,"cache_read_input_tokens":3,"cache_creation":{"ephemeral_1h_input_tokens":4}},"content":[{"type":"tool_use","id":"t1","name":"Bash"}]}}' \
-            '{"type":"user","timestamp":"2026-01-01T00:00:01Z","message":{"content":[{"type":"tool_result","tool_use_id":"t1","is_error":true,"content":"boom"}]}}' > /tmp/t.jsonl
-          python3 - <<'PY'
-          import importlib.util, pathlib
-          spec = importlib.util.spec_from_file_location("t", ".claude/hooks/agent_telemetry.py")
-          m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
-          r = m.measure(pathlib.Path("/tmp/t.jsonl"))
-          assert r["requests"] == {"m": 1}, r
-          assert r["tokens"]["m|cache_write_1h"] == 4 and r["tokens"]["m|cache_read"] == 3, r
-          assert r["tool_calls"] == {"Bash": 1} and r["tool_errors"] == {"Bash": 1} and r["tool_bytes"] == {"Bash": 4}, r
-          p = m.build_payload("s", r, 0, "b")
-          names = [x["name"] for x in p["resourceMetrics"][0]["scopeMetrics"][0]["metrics"]]
-          assert "ow_agent_tokens_total" in names and "ow_agent_upstream_guard_denials_total" in names, names
-          print("telemetry measure/build ok")
-          PY
+      - name: Telemetry hook parses, prices and builds a synthetic transcript offline
+        run: python3 .claude/hooks/test_agent_telemetry.py
