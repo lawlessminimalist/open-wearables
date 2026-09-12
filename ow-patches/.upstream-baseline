@@ -1,8 +1,10 @@
 # The upstream/main commit we last fully reconciled the patches against.
 # check_upstream.py compares this against the current upstream/main to detect
-# whether upstream has TOUCHED any file a patch depends on (drift). After you
-# merge upstream and re-verify every flagged patch, refresh this with:
+# whether upstream has TOUCHED any file a patch depends on (drift), and
+# .upstream-symbols.json records the replaced methods' body hashes at that
+# commit. After you merge upstream and re-verify every flagged patch, refresh
+# both with:
 #
-#     python ow-patches/check_upstream.py --update-baseline
+#     python3 ow-patches/check_upstream.py --update-baseline
 #
 53de57cade876df104720c0c5be07bbf462a55b1

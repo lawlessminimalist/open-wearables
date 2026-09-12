@@ -5,6 +5,7 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
 
+from app.config import settings
 from app.constants.workout_types.garmin import get_unified_workout_type
 from app.database import DbSession
 from app.repositories.event_record_repository import EventRecordRepository
@@ -13,11 +14,63 @@ from app.schemas.model_crud.activities import (
     EventRecordCreate,
     EventRecordDetailCreate,
     EventRecordMetrics,
+    TimeSeriesSampleCreate,
 )
 from app.services.event_record_service import event_record_service
 from app.services.providers.garmin_connect.client import GarminConnectClient
+from app.services.providers.garmin_connect.coverage import (
+    ACTIVITY_SAMPLE_ALWAYS,
+    ACTIVITY_SAMPLE_SERIES,
+    ACTIVITY_SAMPLE_TIMESTAMP_KEYS,
+)
 from app.services.providers.templates.base_workouts import BaseWorkoutsTemplate
 from app.utils.structured_logging import log_structured
+
+# --- per-activity sample ingestion -------------------------------------------
+# Formerly the ow-patch fix-garmin-connect-activity-hr-samples, retired into source
+# on 2026-09-13: this file is fork-only, so a runtime patch over it could only ever
+# shadow the fork's own later edits (FORK.md section 2). Behaviour is unchanged.
+#
+# Why: the daily HR endpoint returns ~2-minute samples; during a workout the watch
+# records every second, retrievable only via the activity-details endpoint. The
+# same response carries the other seven ACTIVITY_SAMPLE_SERIES columns, so they
+# cost no extra requests. Heart rate is ingested UNCONDITIONALLY (ActivitySummary
+# derives intensity minutes from heart_rate sample density — gating it halved
+# minute-bucket coverage inside workouts, measured 132 -> 64 over 30 days); the
+# trace series are gated on settings.ingest_workout_samples.
+
+# Activity must have HR + this many seconds of duration before the extra call.
+_MIN_DURATION_SECONDS = 300
+_HR_KEYS = ("directHeartRate", "HEART_RATE")
+# Legacy descriptor-key variants Garmin has returned, folded onto the canonical key
+# used in ACTIVITY_SAMPLE_SERIES. Without this a payload naming the column
+# HEART_RATE resolves to no HR index and the samples are silently dropped.
+_KEY_ALIASES: dict[str, str] = {"HEART_RATE": "directHeartRate"}
+
+
+def _extract_metric_indices(
+    metric_descriptors: list[dict[str, Any]],
+) -> tuple[dict[str, int], int | None]:
+    """Return ({descriptor key: column index}, timestamp index).
+
+    Garmin's metricDescriptors block maps each metric name to its position in every
+    activityDetailMetrics row, so indices are resolved per activity: a walk has no
+    power column, a treadmill run no GPS.
+    """
+    wanted = {key for key, _ in ACTIVITY_SAMPLE_SERIES}
+    found: dict[str, int] = {}
+    ts_idx: int | None = None
+    for desc in metric_descriptors:
+        key = (desc.get("key") or desc.get("metricKey") or "").strip()
+        key = _KEY_ALIASES.get(key, key)
+        idx = desc.get("metricsIndex")
+        if not key or idx is None:
+            continue
+        if key in wanted and key not in found:
+            found[key] = int(idx)
+        elif ts_idx is None and key in ACTIVITY_SAMPLE_TIMESTAMP_KEYS:
+            ts_idx = int(idx)
+    return found, ts_idx
 
 
 class GarminConnectWorkouts(BaseWorkoutsTemplate):
@@ -215,7 +268,116 @@ class GarminConnectWorkouts(BaseWorkoutsTemplate):
     # Load
     # -------------------------------------------------------------------------
 
+    def _save_activity_hr_samples(self, db: DbSession, user_id: UUID, raw_activity: dict[str, Any]) -> int:
+        """Fetch per-sample metrics for one workout and persist them as time-series rows.
+
+        Returns the number of samples persisted (0 if skipped or no HR data).
+        """
+        from app.services.timeseries_service import timeseries_service  # noqa: PLC0415
+
+        activity_id = raw_activity.get("activityId")
+        avg_hr = raw_activity.get("averageHR")
+        duration = int(raw_activity.get("duration") or 0)
+
+        if not activity_id or avg_hr is None or avg_hr <= 0 or duration < _MIN_DURATION_SECONDS:
+            return 0
+
+        try:
+            details = self.client.get_activity_details(activity_id)
+        except Exception as exc:
+            log_structured(
+                self.logger,
+                "warning",
+                "Failed to fetch Garmin Connect activity details for HR samples",
+                action="garmin_connect_activity_details_error",
+                activity_id=str(activity_id),
+                error=str(exc),
+                user_id=str(user_id),
+            )
+            return 0
+
+        metric_descriptors = details.get("metricDescriptors") or []
+        activity_metrics = details.get("activityDetailMetrics") or []
+        if not metric_descriptors or not activity_metrics:
+            return 0
+
+        metric_idx, ts_idx = _extract_metric_indices(metric_descriptors)
+        if not metric_idx or ts_idx is None:
+            return 0
+
+        device_model = self.client.get_last_used_device_model()
+
+        # Heart rate always; trace series only when the storage flag is on.
+        series_by_key = {
+            key: st
+            for key, st in ACTIVITY_SAMPLE_SERIES
+            if st in ACTIVITY_SAMPLE_ALWAYS or settings.ingest_workout_samples
+        }
+        metric_idx = {k: v for k, v in metric_idx.items() if k in series_by_key}
+        if not metric_idx:
+            return 0
+
+        samples: list[TimeSeriesSampleCreate] = []
+        for entry in activity_metrics:
+            metrics = entry.get("metrics") or []
+            if ts_idx >= len(metrics):
+                continue
+            epoch_ms = metrics[ts_idx]
+            if epoch_ms is None:
+                continue
+            try:
+                recorded_at = datetime.fromtimestamp(float(epoch_ms) / 1000.0, tz=timezone.utc)
+            except (TypeError, ValueError, OverflowError):
+                continue
+
+            for key, col in metric_idx.items():
+                if col >= len(metrics):
+                    continue
+                value = metrics[col]
+                if value is None:
+                    continue
+                # 0 bpm is a dropout, not a reading; latitude / elevation / air
+                # temperature are legitimately zero or negative.
+                if key in _HR_KEYS and value <= 0:
+                    continue
+                try:
+                    samples.append(
+                        TimeSeriesSampleCreate(
+                            id=uuid4(),
+                            user_id=user_id,
+                            source=self.provider_name,
+                            # DataSource identity is (user_id, device_model, source);
+                            # omitting device_model would file these under a
+                            # device-less row split from every other garmin_connect row.
+                            device_model=device_model,
+                            recorded_at=recorded_at,
+                            value=Decimal(str(value)),
+                            series_type=series_by_key[key],
+                            external_id=str(activity_id),
+                        )
+                    )
+                except (TypeError, ValueError, OverflowError):
+                    continue
+
+        if samples:
+            try:
+                timeseries_service.bulk_create_samples(db, samples)
+            except Exception as exc:
+                log_structured(
+                    self.logger,
+                    "warning",
+                    "Failed to bulk-insert Garmin Connect activity HR samples",
+                    action="garmin_connect_activity_hr_save_error",
+                    activity_id=str(activity_id),
+                    sample_count=len(samples),
+                    error=str(exc),
+                    user_id=str(user_id),
+                )
+                return 0
+        return len(samples)
+
     def load_data(self, db: DbSession, user_id: UUID, **kwargs: Any) -> int:
+        """Save workouts AND per-activity samples (see the module note above)."""
         from datetime import timedelta  # noqa: PLC0415
 
         start = kwargs.get("start") or kwargs.get("start_date")
@@ -238,7 +400,19 @@ class GarminConnectWorkouts(BaseWorkoutsTemplate):
         raw_activities = self.get_workouts(db, user_id, start_dt, end_dt)
 
         count = 0
-        for record, detail in self._build_bundles(raw_activities, user_id):
+        bundles = self._build_bundles(raw_activities, user_id)
+        # _build_bundles may drop entries that fail to normalize — pair raw with the
+        # corresponding bundle by activity_id so we don't fetch HR for a phantom workout.
+        bundles_by_activity_id: dict[str, tuple] = {}
+        for raw, bundle in zip(raw_activities, bundles, strict=False):
+            if isinstance(raw, dict) and raw.get("activityId") is not None:
+                bundles_by_activity_id[str(raw["activityId"])] = (raw, bundle)
+        if len(bundles_by_activity_id) != len(bundles):
+            ordered = list(zip(raw_activities, bundles, strict=False))
+        else:
+            ordered = list(bundles_by_activity_id.values())
+
+        for raw, (record, detail) in ordered:
             try:
                 event_record_service.create_workout_with_detail(db, record, detail)
                 count += 1
@@ -249,6 +423,30 @@ class GarminConnectWorkouts(BaseWorkoutsTemplate):
                     "warning",
                     "Failed to save Garmin Connect activity, skipping",
                     action="garmin_connect_save_error",
+                    error=str(exc),
+                    user_id=str(user_id),
+                )
+                continue
+
+            try:
+                saved = self._save_activity_hr_samples(db, user_id, raw)
+                if saved:
+                    log_structured(
+                        self.logger,
+                        "info",
+                        "Saved per-activity HR samples",
+                        action="garmin_connect_activity_hr_saved",
+                        activity_id=str(raw.get("activityId")),
+                        sample_count=saved,
+                        user_id=str(user_id),
+                    )
+            except Exception as exc:
+                log_structured(
+                    self.logger,
+                    "warning",
+                    "Per-activity HR fetch failed; workout summary already saved",
+                    action="garmin_connect_activity_hr_unhandled",
+                    activity_id=str(raw.get("activityId")) if isinstance(raw, dict) else None,
                     error=str(exc),
                     user_id=str(user_id),
                 )

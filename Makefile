@@ -52,3 +52,13 @@ reset_db:  ## Truncate all tables in the database (WARNING: deletes all data)
 
 push_local_k3s:  ## Cross-build (linux/amd64) and push images to the homelab registry, then roll deploys. Optional: t=backend|frontend
 	./scripts/build-push.sh $(or $(t),all)
+
+# ---- fork-owned agent tooling (see CLAUDE.md) ----
+hook-test:  ## Run the upstream-guard hook case table
+	python3 .claude/hooks/test_block_upstream_pr.py
+
+patch-lint:  ## Registry lint: flags vs status, no fork-owned patch targets, symbol hashes present
+	python3 ow-patches/check_upstream.py --lint
+
+patch-drift:  ## Symbol-level upstream drift report for every ow-patch
+	python3 ow-patches/check_upstream.py

@@ -21,14 +21,14 @@ _PROVIDER = "garmin_connect"
 #
 # Formerly ow-patches/local/fix-garmin-connect-rate-limit-backoff.py, retired
 # into source on 2026-09-13: this file is fork-only, so a runtime patch over it
-# bought every shadowing hazard and no upstream-conflict benefit (FORK.md §2).
+# bought every shadowing hazard and no upstream-conflict benefit (FORK.md section 2).
 # The patch file is kept for its history.
 #
 # Why this exists: load_and_save_all loops ~30 dates x 5 data types, and the
 # underlying garminconnect client walks up to five login strategies per login.
 # Without classification, one 429 turned into ~150 login storms per run, hourly,
 # which is how a soft rate-limit became an IP block and then a LOCKED account
-# (observed 2026-08-20). See LONGEVITY.md / FORK.md §6 for the request budget.
+# (observed 2026-08-20). See LONGEVITY.md / FORK.md section 6 for the request budget.
 # ---------------------------------------------------------------------------
 
 # --- Redis keys -------------------------------------------------------------
@@ -590,6 +590,17 @@ class GarminConnectClient:
     def get_hrv_data(self, cdate: date) -> dict[str, Any]:
         """Return HRV status data for a calendar date."""
         result = self._call_with_reauth("get_hrv_data", cdate.strftime("%Y-%m-%d"))
+        return result if isinstance(result, dict) else {}
+
+    def get_activity_details(self, activity_id: int | str, maxchart: int = 10000) -> dict[str, Any]:
+        """Per-sample metrics for one activity: metricDescriptors + activityDetailMetrics.
+
+        maxchart caps the chart points Garmin returns; 10000 keeps per-second resolution
+        for activities up to ~2h45m and longer ones are downsampled server-side.
+        Polylines are left at their default. Formerly the ow-patch
+        fix-garmin-connect-activity-hr-samples; retired into source 2026-09-13.
+        """
+        result = self._call_with_reauth("get_activity_details", activity_id, maxchart)
         return result if isinstance(result, dict) else {}
 
     def get_last_used_device_model(self) -> str | None:

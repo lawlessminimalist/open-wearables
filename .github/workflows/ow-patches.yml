@@ -1,0 +1,61 @@
+name: ow-patches guardrails
+
+# Fork-owned. Upstream's ci.yml runs the backend suite (which includes the four
+# ow-patches guard tests and the shadow-drift test); this workflow adds the checks
+# that need the upstream remote or live outside backend/: the registry lint, the
+# symbol-level drift report, and the Claude hook test table.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  registry:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Add upstream remote
+        run: |
+          git remote add upstream https://github.com/the-momentum/open-wearables.git
+          git fetch --no-tags upstream main
+      - name: Registry lint (flags agree with status, no fork-owned targets, symbols hashed)
+        run: python3 ow-patches/check_upstream.py --lint
+      - name: Symbol-level drift report
+        # Red on a reconcile PR until every changed method is audited and the
+        # baseline refreshed — that is the forcing function, not a flake.
+        run: python3 ow-patches/check_upstream.py
+      - name: Patches install against this tree (import-only smoke)
+        run: python3 -c "import ast,sys; [ast.parse(open(p).read()) for p in sys.argv[1:]]" ow-patches/apply.py ow-patches/local/*.py
+
+  hooks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Upstream-guard hook cases
+        run: python3 .claude/hooks/test_block_upstream_pr.py
+      - name: Telemetry hook parses a synthetic transcript offline
+        env:
+          OW_AGENT_METRICS_DISABLE: "1"
+        run: |
+          printf '%s\n' '{"type":"assistant","requestId":"r1","timestamp":"2026-01-01T00:00:00Z","message":{"model":"m","usage":{"input_tokens":1,"output_tokens":2,"cache_read_input_tokens":3,"cache_creation":{"ephemeral_1h_input_tokens":4}},"content":[{"type":"tool_use","id":"t1","name":"Bash"}]}}' \
+            '{"type":"user","timestamp":"2026-01-01T00:00:01Z","message":{"content":[{"type":"tool_result","tool_use_id":"t1","is_error":true,"content":"boom"}]}}' > /tmp/t.jsonl
+          python3 - <<'PY'
+          import importlib.util, pathlib
+          spec = importlib.util.spec_from_file_location("t", ".claude/hooks/agent_telemetry.py")
+          m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+          r = m.measure(pathlib.Path("/tmp/t.jsonl"))
+          assert r["requests"] == {"m": 1}, r
+          assert r["tokens"]["m|cache_write_1h"] == 4 and r["tokens"]["m|cache_read"] == 3, r
+          assert r["tool_calls"] == {"Bash": 1} and r["tool_errors"] == {"Bash": 1} and r["tool_bytes"] == {"Bash": 4}, r
+          p = m.build_payload("s", r, 0, "b")
+          names = [x["name"] for x in p["resourceMetrics"][0]["scopeMetrics"][0]["metrics"]]
+          assert "ow_agent_tokens_total" in names and "ow_agent_upstream_guard_denials_total" in names, names
+          print("telemetry measure/build ok")
+          PY

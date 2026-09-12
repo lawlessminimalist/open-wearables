@@ -186,3 +186,4 @@ CLAUDE.local.md
 # settings.json that wires it, are shared guardrails. settings.local.json stays ignored.
 !.claude/hooks/
 !.claude/settings.json
+!.claude/HARNESS-NOTES.md
