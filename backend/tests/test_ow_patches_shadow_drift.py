@@ -29,6 +29,7 @@ from __future__ import annotations
 import importlib.util
 import json
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
@@ -37,9 +38,10 @@ _OW = _REPO_ROOT / "ow-patches"
 _SYMBOLS = _OW / ".upstream-symbols.json"
 
 
-def _load_symbol_hash():
+def _load_symbol_hash() -> ModuleType:
     spec = importlib.util.spec_from_file_location("_ow_symbol_hash", _OW / "symbol_hash.py")
-    assert spec and spec.loader
+    assert spec is not None
+    assert spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
