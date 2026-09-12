@@ -1,0 +1,46 @@
+#!/bin/sh
+# Read-only access to the homelab Grafana over the tailnet.
+#
+#   .claude/bin/grafana get /api/dashboards/uid/openwearables-longevity
+#   .claude/bin/grafana get '/api/search?query=longevity'
+#   .claude/bin/grafana sql "SELECT count(*) FROM data_point_series"      # through the grafana_ro datasource
+#
+# Only GET requests and datasource queries are possible from here; the admin credential is
+# read from the cluster secret each call and never printed. The permission rule for this
+# script lives in .claude/settings.local.json.
+set -eu
+ctx="${OW_KUBE_CONTEXT:-default}"
+host="${OW_GRAFANA_HOST:-grafana.lab.homelab-dhlaw.uk:30800}"
+ip="${OW_GRAFANA_IP:-100.88.212.12}"
+mode="${1:-}"; shift || true
+user=$(kubectl --context "$ctx" -n monitoring get secret grafana-admin -o jsonpath='{.data.admin-user}' | base64 -d)
+pass=$(kubectl --context "$ctx" -n monitoring get secret grafana-admin -o jsonpath='{.data.admin-password}' | base64 -d)
+case "$mode" in
+  get)
+    path="${1:?usage: grafana get /api/...}"
+    case "$path" in /api/*) ;; *) echo "grafana: only /api paths" >&2; exit 2;; esac
+    curl -sS --fail-with-body -X GET --resolve "$host:$ip" -u "$user:$pass" "http://$host$path"
+    echo
+    ;;
+  sql)
+    sql="${1:?usage: grafana sql \"SELECT ...\"}"
+    printf '%s' "$sql" | python3 -c '
+import json, sys
+sql = sys.stdin.read()
+print(json.dumps({"queries": [{"refId": "A", "datasource": {"uid": "openwearables", "type": "postgres"}, "rawSql": sql, "format": "table", "maxDataPoints": 10000}], "from": "now-10y", "to": "now"}))' \
+      | curl -sS --fail-with-body --resolve "$host:$ip" -u "$user:$pass" -H 'Content-Type: application/json' -d @- "http://$host/api/ds/query" \
+      | python3 -c '
+import json, sys
+r = json.load(sys.stdin)
+a = r["results"]["A"]
+if a.get("error"):
+    print("ERROR", a["error"], file=sys.stderr); sys.exit(1)
+for fr in a.get("frames", []):
+    print("\t".join(f["name"] for f in fr["schema"]["fields"]))
+    for row in zip(*fr["data"]["values"]):
+        print("\t".join("" if v is None else str(v) for v in row))'
+    ;;
+  *)
+    echo "usage: grafana get /api/<path> | grafana sql \"<select>\"" >&2; exit 2
+    ;;
+esac

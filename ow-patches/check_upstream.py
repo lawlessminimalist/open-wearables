@@ -454,14 +454,38 @@ def lint(patches: list[Patch], recorded: dict) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
+def show(patches: list[Patch], wanted: str) -> int:
+    """Print one registry entry verbatim, so a reconcile never reads PATCHES.md wholesale."""
+    for p in patches:
+        if p.patch_id == wanted:
+            print(f"## {p.patch_id}")
+            for k, v in p.raw.items():
+                print(f"- {k}: {v}")
+            return 0
+    print(f"unknown patch id {wanted!r}; ids are: {', '.join(p.patch_id for p in patches)}", file=sys.stderr)
+    return 2
+
+
+def list_patches(patches: list[Patch]) -> int:
+    for p in patches:
+        print(f"{p.patch_id:45} {p.status:20} {p.replacement_kind:20} {p.file}")
+    return 0
+
+
 def main() -> int:
     args = sys.argv[1:]
-    ensure_upstream_remote()
-    fetch_upstream()
     patches = parse_patches_md(PATCHES_MD)
     if not patches:
         print("No patches parsed from PATCHES.md", file=sys.stderr)
         return 1
+    # registry-only modes: no remote, no fetch
+    if "--show" in args:
+        idx = args.index("--show")
+        return show(patches, args[idx + 1] if idx + 1 < len(args) else "")
+    if "--list" in args:
+        return list_patches(patches)
+    ensure_upstream_remote()
+    fetch_upstream()
     recorded = read_symbols()
     baseline = read_baseline()
 

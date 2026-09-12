@@ -185,6 +185,7 @@ CLAUDE.local.md
 # Fork: the project hook that blocks any gh / git push aimed at upstream, and the
 # settings.json that wires it, are shared guardrails. settings.local.json stays ignored.
 !.claude/hooks/
+!.claude/bin/
 !.claude/settings.json
 !.claude/HARNESS-NOTES.md
 !ow-patches/.upstream-symbols.json

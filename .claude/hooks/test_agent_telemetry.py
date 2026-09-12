@@ -57,8 +57,8 @@ LINES = [
     user({"type": "tool_result", "tool_use_id": "t1", "is_error": True, "content": "boom"}, {"type": "tool_result", "tool_use_id": "t2", "content": "ok"}),
     # r2: no tool issued, 5m cache write, priced at the haiku rate via prefix match
     assistant("r2", HAIKU, usage(inp=2_000_000, w5=1_000_000)),
-    # r3: unknown model, must not be priced
-    assistant("r3", UNKNOWN, usage(inp=5, out=5), tool_use("t3", "Bash")),
+    # r3: unknown model, must not be priced; follows a 2-hour pause, so its 4M cache write is idle recache
+    assistant("r3", UNKNOWN, usage(inp=5, out=5, w1=4_000_000), tool_use("t3", "Bash"), ts="2026-01-01T02:00:00Z"),
     user({"type": "tool_result", "tool_use_id": "t3", "content": "x"}),
     # sidechain (subagent) line, ignored entirely
     {"type": "assistant", "isSidechain": True, "requestId": "r9", "message": {"model": FABLE, "usage": usage(inp=99), "content": [tool_use("t9", "Grep")]}},
@@ -85,6 +85,7 @@ def main() -> int:
         ("tool errors and bytes by tool", m["tool_errors"] == {"Bash": 1} and m["tool_bytes"] == {"Bash": 5, "Read": 2}),
         ("prompts count the real prompt and the two notices", m["prompts"] == 3),
         ("subagent tokens summed from the notices", m["subagent_tokens"] == 88536),
+        ("cache write after a 2h pause counted as idle recache", m["idle_recache"] == 4_000_000),
         # fable 5.1: 1M input $10 + 1M 1h write $20 + 1M read $0.25 + 1M output $50 = $80.25
         ("fable priced from the table", abs(m["cost"][FABLE] - 80.25) < 1e-9),
         # haiku 4.5 by prefix: 2M input $2 + 1M 5m write $1.25 = $3.25
@@ -106,6 +107,30 @@ def main() -> int:
         ("cost sums are cumulative monotonic", all(metrics[n]["sum"]["isMonotonic"] and metrics[n]["sum"]["aggregationTemporality"] == 2 for n in ("ow_agent_cost_usd", "ow_agent_tool_cost_usd"))),
         ("denials point present", metrics["ow_agent_upstream_guard_denials_total"]["sum"]["dataPoints"][0]["asInt"] == "3"),
         ("subagent tokens emitted", metrics["ow_agent_subagent_tokens_total"]["sum"]["dataPoints"][0]["asInt"] == "88536"),
+    ]
+
+    checks.append(("idle recache emitted", metrics["ow_agent_idle_recache_tokens_total"]["sum"]["dataPoints"][0]["asInt"] == "4000000"))
+
+    # idle notice: the last request in LINES is r3 at 02:00 on an unknown model (no price) with a 4M-token context
+    with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as fh:
+        for line in LINES:
+            fh.write(json.dumps(line) + "\n")
+        path = Path(fh.name)
+    try:
+        t0 = t.parse_ts("2026-01-01T02:00:00Z")
+        quiet = t.idle_notice(path, t0 + 30 * 60 * 10**9)
+        loud = t.idle_notice(path, t0 + 3 * 3600 * 10**9)
+        fable_lines = LINES[:2] + [user("x", ts="2026-01-01T00:00:02Z")]  # last request r1 on fable: 1M input + 1M read + 1M 1h write = 3M context, at the 1h write rate $20/M = $60
+        fh2 = Path(tempfile.mkstemp(suffix=".jsonl")[1])
+        fh2.write_text("".join(json.dumps(line) + "\n" for line in fable_lines))
+        priced = t.idle_notice(fh2, t.parse_ts("2026-01-01T00:00:00Z") + 2 * 3600 * 10**9)
+        fh2.unlink()
+    finally:
+        path.unlink(missing_ok=True)
+    checks += [
+        ("no notice under the idle threshold", quiet == ""),
+        ("notice after a long pause names the gap and the context size", "180 min idle" in loud and "4000k tokens" in loud and "$" not in loud),
+        ("notice prices the re-write on a priced model", "$60.00" in priced and "3000k tokens" in priced and "120 min idle" in priced),
     ]
 
     failed = [name for name, ok in checks if not ok]

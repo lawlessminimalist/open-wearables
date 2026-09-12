@@ -1,0 +1,23 @@
+#!/bin/sh
+# Read-only SQL against the deployed open-wearables database.
+#
+# Runs psql inside the postgres pod with default_transaction_read_only=on, so any INSERT,
+# UPDATE, DELETE, DDL or SET that tries to lift the flag is refused by the server, not by
+# this script. The permission rule for it lives in .claude/settings.local.json; the agent
+# has no other path to the production database (kubectl exec with psql is refused).
+#
+#   .claude/bin/ow-sql "SELECT count(*) FROM data_point_series"
+#   echo "SELECT ..." | .claude/bin/ow-sql
+#
+# Output is tab-separated rows without headers; add -H as the first argument for aligned
+# output with headers. Set OW_KUBE_CONTEXT to override the kube context (default: default).
+set -eu
+ctx="${OW_KUBE_CONTEXT:-default}"
+fmt=tsv
+if [ "${1:-}" = "-H" ]; then fmt=aligned; shift; fi
+if [ $# -gt 0 ]; then sql="$*"; else sql=$(cat); fi
+case "$sql" in *transaction_read_only*) echo "ow-sql: refusing a statement that names the read-only flag" >&2; exit 2;; esac
+printf '%s\n' "$sql" | kubectl --context "$ctx" exec -i -n open-wearables deploy/postgres -- sh -c '
+  if [ "$1" = tsv ]; then set -- -At -F "$(printf "\t")"; else set --; fi
+  PGOPTIONS="-c default_transaction_read_only=on -c statement_timeout=60000" \
+    exec psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 -q "$@"' _ "$fmt"

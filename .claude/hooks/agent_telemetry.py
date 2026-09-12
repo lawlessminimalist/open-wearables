@@ -35,6 +35,11 @@ Metrics (labels: session_id, repo, plus per-metric ones):
                                                  a request issuing none lands on tool="none"
   ow_agent_unpriced_requests_total{model}        requests whose model is not in PRICING;
                                                  their cost is absent, never guessed
+  ow_agent_idle_recache_tokens_total             cache-write tokens of requests that followed a
+                                                 pause over 55 min (the context re-written after
+                                                 the cache expired); `--idle-notice` on
+                                                 UserPromptSubmit prints the same figure into the
+                                                 turn as it is incurred
   ow_agent_subagent_tokens_total                 tokens reported by finished Agent subagents in
                                                  their task notifications; outside every other
                                                  series and unpriced, because the notice has no
@@ -147,6 +152,53 @@ def parse_ts(ts: str | None) -> int | None:
 
 
 _SUBAGENT_TOKENS_RE = re.compile(r"<subagent_tokens>(\d+)</subagent_tokens>")
+IDLE_GAP_NS = 55 * 60 * 10**9  # the 1h prompt cache has expired for practical purposes after 55 minutes
+
+
+def last_request(transcript: Path) -> tuple[str, int, int] | None:
+    """(model, timestamp ns, prompt size) of the final request: the context the next one inherits."""
+    found = None
+    with transcript.open("r", encoding="utf-8", errors="replace") as fh:
+        for raw in fh:
+            try:
+                rec = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if rec.get("isSidechain") or rec.get("type") != "assistant":
+                continue
+            msg = rec.get("message") or {}
+            usage = msg.get("usage") or {}
+            ts = parse_ts(rec.get("timestamp"))
+            if not usage or not ts:
+                continue
+            cc = usage.get("cache_creation") or {}
+            write = int(cc.get("ephemeral_5m_input_tokens") or 0) + int(cc.get("ephemeral_1h_input_tokens") or 0) or int(usage.get("cache_creation_input_tokens") or 0)
+            size = int(usage.get("input_tokens") or 0) + int(usage.get("cache_read_input_tokens") or 0) + write
+            found = (msg.get("model") or "unknown", ts, size)
+    return found
+
+
+def idle_notice(transcript: Path, now_ns: int) -> str:
+    """UserPromptSubmit: one line when the pause since the last request exceeded the cache TTL.
+
+    The whole context is about to be re-written at the 1h cache-write rate; saying so in the
+    turn makes the cost visible when it is incurred rather than in a report afterwards, and
+    lets the agent suggest compacting before the next break.
+    """
+    last = last_request(transcript)
+    if not last:
+        return ""
+    model, ts, size = last
+    gap = now_ns - ts
+    if gap < IDLE_GAP_NS:
+        return ""
+    p = price_for(model)
+    cost = f", about ${size * p[2] / 1e6:.2f} at the 1h write rate" if p else ""
+    return (
+        f"ow-agent efficiency: {gap / 60e9:.0f} min idle; the prompt cache has expired and roughly "
+        f"{size // 1000}k tokens of context are re-written by this turn{cost}. "
+        "Compact or end the session before the next long break."
+    )
 
 
 def _subagent_tokens(text: str) -> int:
@@ -171,6 +223,8 @@ def measure(transcript: Path) -> dict:
     req_usage: dict[str, tuple[str, int, int, int, int, int]] = {}
     req_tools: dict[str, list[str]] = defaultdict(list)  # requestId -> tool_use names, all lines
     subagent_tokens = 0  # reported by Agent task notifications; the subagents' own transcripts are sidechains
+    idle_recache = 0  # cache-write tokens of requests that followed a gap longer than the cache TTL
+    last_req_ts: int | None = None
     first_ts: int | None = None
     last_ts: int | None = None
 
@@ -210,6 +264,10 @@ def measure(transcript: Path) -> dict:
                         int(usage.get("cache_read_input_tokens") or 0),
                         int(usage.get("output_tokens") or 0),
                     )
+                    if ts:
+                        if last_req_ts and ts - last_req_ts > IDLE_GAP_NS:
+                            idle_recache += w5 + w1
+                        last_req_ts = ts
                 if isinstance(content, list):
                     for item in content:
                         if isinstance(item, dict) and item.get("type") == "tool_use":
@@ -271,6 +329,7 @@ def measure(transcript: Path) -> dict:
         "tool_cost": {f"{t}|{m}": usd for (t, m), usd in tool_cost.items()},
         "unpriced": dict(unpriced),
         "subagent_tokens": subagent_tokens,
+        "idle_recache": idle_recache,
         "prompts": prompts,
         "first_ts": first_ts,
         "last_ts": last_ts,
@@ -354,6 +413,14 @@ def build_payload(session_id: str, m: dict, denials: int, branch: str) -> dict:
                 "ow_agent_unpriced_requests_total",
                 [pt(n, _attr("model", k)) for k, n in sorted(m["unpriced"].items())],
                 "requests whose model has no entry in PRICING; their cost is missing from ow_agent_cost_usd",
+            )
+        )
+    if m.get("idle_recache"):
+        metrics.append(
+            _sum(
+                "ow_agent_idle_recache_tokens_total",
+                [pt(m["idle_recache"])],
+                "cache-write tokens spent re-writing the context after a pause longer than the cache TTL",
             )
         )
     if m.get("subagent_tokens"):
@@ -467,6 +534,14 @@ def main() -> int:
     session_id = hook.get("session_id") or ""
     transcript = Path(hook.get("transcript_path") or "")
     if not session_id or not transcript.is_file():
+        return 0
+    if "--idle-notice" in sys.argv[1:]:
+        try:
+            line = idle_notice(transcript, time.time_ns())
+            if line:
+                print(line)
+        except Exception as exc:  # noqa: BLE001
+            log(f"idle notice failed: {exc!r}")
         return 0
     try:
         m = measure(transcript)

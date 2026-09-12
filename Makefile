@@ -63,3 +63,9 @@ patch-lint:  ## Registry lint: flags vs status, no fork-owned patch targets, sym
 
 patch-drift:  ## Symbol-level upstream drift report for every ow-patch
 	python3 ow-patches/check_upstream.py
+
+patch-show:  ## Print one registry entry: make patch-show ID=fix-pace-null (no fetch, no whole-file read)
+	python3 ow-patches/check_upstream.py --show $(ID)
+
+patch-list:  ## One line per patch: id, status, kind, file
+	python3 ow-patches/check_upstream.py --list

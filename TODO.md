@@ -15,7 +15,6 @@ Open work for this fork, kept current as work lands. Read it at session start. F
 
 ## Tooling
 
-- A `UserPromptSubmit` idle-gap notice that prints the re-cache cost into the turn, as dhlaw-explorations does.
 - Extend `test_ow_patches_column_drift.py` to `self.model.*` and `SeriesType.*` references and result-dict keys, or retire it in favour of the shadow-drift hash.
 - Wire `.pre-commit-config.yaml` per clone and add the language-agnostic gate rules for `.env` files, database files, size caps and binary magic bytes.
 
