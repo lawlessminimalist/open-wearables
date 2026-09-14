@@ -35,9 +35,9 @@ anything.** Installation is driven by three separate mechanisms:
 | inline in a composer | code in `apply.py` | the composer implements the behaviour directly; the patch file is documentation only (currently only `fix-summary-timezone-echo`) |
 
 **Adding a flag without wiring it produces a patch that reports as enabled
-everywhere and never runs.** That has happened twice — see §3.
+everywhere and never runs.** That has happened twice — see section 3.
 
-Current state (2026-09-13): 15 backend patches registered, 12 enabled, 3 retired, 8 standalone, 3 composed (plus 3 `structural` entries: celery-late-acks, historical-sync-chunking, frontend-display-timezone).
+Current state (2026-09-13): 15 backend patches registered, 11 enabled, 4 retired, 7 standalone, 3 composed (plus 3 `structural` entries: celery-late-acks, historical-sync-chunking, frontend-display-timezone).
 
 ### `replacement_kind` and why it matters
 
@@ -67,7 +67,7 @@ audit noticed (retired into source that day). Fork-owned code is edited directly
 **`garmin_connect/` is fork-only.** It does not exist upstream. Edit it directly;
 it will never conflict.
 
-**The image must contain `ow-patches/`.** See §4 — this is not optional and has
+**The image must contain `ow-patches/`.** See section 4 — this is not optional and has
 bitten production.
 
 **Assume a `wholesale-replace` patch is stale until you have diffed it.**
@@ -114,7 +114,7 @@ Each of these was silent. None raised, none failed a test at the time.
    arguments have to be re-applied deliberately, which is what Phase 4 of the
    reconcile skill is for.
 
-### The four guard tests
+### The five guard tests
 
 Keep them green; they exist because of the list above.
 
@@ -124,6 +124,7 @@ Keep them green; they exist because of the list above.
 | `backend/tests/test_ow_patches_installed.py` | a patch that is enabled but not actually installed — asserts every patched symbol's `__module__` is an `_ow_patches*` module, and that the flag dict and the wiring tuples agree |
 | `backend/tests/test_ow_patches_column_drift.py` | a wholesale-replace patch that has dropped an ORM column upstream added |
 | `backend/tests/test_ow_patches_identity_drift.py` | a patch or fork-owned provider that omits `source=` / is inconsistent about `device_model=` on a persisted-row constructor, splitting one device across two `data_source` identities |
+| `backend/tests/test_ow_patches_shadow_drift.py` | an upstream method a wholesale-replace patch shadows has changed since the patch was last verified (hash recorded by `check_upstream.py --update-baseline`) |
 
 ---
 
@@ -223,10 +224,14 @@ specific gaps to compensate for manually:
 | Image overlay | `Dockerfile.ow-patches` |
 | GHCR publishing | `.github/workflows/publish-ghcr.yml` |
 | Local build/deploy | `scripts/build-push.sh`, `make push_local_k3s` |
-| Reconcile skill | `.claude/skills/upstream-reconcile/` |
-| Longevity tracking context | [`LONGEVITY.md`](./LONGEVITY.md) |
+| Reconcile skill + audit prompt template | `.claude/skills/upstream-reconcile/` |
+| Upstream guard hook, its case table, and the agent telemetry hook | `.claude/hooks/` |
+| Symbol-level drift, registry lint, recorded method hashes | `ow-patches/check_upstream.py`, `ow-patches/symbol_hash.py`, `ow-patches/.upstream-symbols.json` |
+| Fork-owned CI for the above | `.github/workflows/ow-patches.yml` |
+| Harness traps, open work, what moved | `.claude/HARNESS-NOTES.md`, `TODO.md`, `CHANGELOG.md` |
+| Longevity tracking context | `k8s/manifests/open-wearables/LONGEVITY.md` in the homelab repo (moved out of the public fork 2026-09-13) |
 
-[`LONGEVITY.md`](./LONGEVITY.md) records which of this platform's signals carry
+The deployment's `LONGEVITY.md` (homelab repo, `k8s/manifests/open-wearables/`) records which of this platform's signals carry
 outcome evidence, which are vendor decoration, and the device-vs-population
 calibration offsets that otherwise corrupt any benchmarking. Read it before
 adding a health metric to a dashboard or setting a target on one — several

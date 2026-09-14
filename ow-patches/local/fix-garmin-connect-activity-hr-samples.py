@@ -1,4 +1,7 @@
 # patch_id:        fix-garmin-connect-activity-hr-samples
+# status:          RETIRED 2026-09-13 — moved into backend/app/services/providers/garmin_connect/
+#                  {workouts.py,client.py}. Not loaded by apply.py. Kept for history only.
+#                  Reason: both targets are fork-owned (FORK.md section 2); found by check_upstream.py --lint.
 # upstream_file:   backend/app/services/providers/garmin_connect/workouts.py, backend/app/services/providers/garmin_connect/client.py
 # upstream_symbol: GarminConnectWorkouts.load_data + GarminConnectClient.get_activity_details
 # retire_when:     GarminConnectWorkouts.load_data calls a per-activity HR-detail endpoint and persists per-second (or sub-minute) heart_rate samples for each workout. Marker: presence of `get_activity_details` (or `activityDetailMetrics`) in backend/app/services/providers/garmin_connect/.

@@ -46,7 +46,10 @@ PATCHES_ENABLED: dict[str, bool] = {
     # decorator at merge time — this flag flip is bookkeeping ahead of the merge.
     "fix-active-minutes-broken": False,
     "fix-activity-summary-utc-bucketing": True,
-    "fix-garmin-connect-activity-hr-samples": True,
+    # Retired 2026-09-13: moved into source (garmin_connect/workouts.py + client.py).
+    # Both files are fork-only, so the patch could only ever shadow the fork's own
+    # later edits (FORK.md section 2); found by `check_upstream.py --lint`.
+    "fix-garmin-connect-activity-hr-samples": False,
     "fix-summary-timezone-echo": True,
     "fix-sleep-summary-utc-bucketing": True,
     "fix-health-score-source-priority": True,
@@ -226,7 +229,7 @@ _STANDALONE_PATCHES = (
     "fix-pace-null",
     "fix-spo2-respiratory-missing",
     "fix-activity-summary-utc-bucketing",
-    "fix-garmin-connect-activity-hr-samples",
+    # fix-garmin-connect-activity-hr-samples is retired into source — see PATCHES.md.
     "fix-sleep-summary-utc-bucketing",
     "fix-health-score-source-priority",
     # fix-garmin-connect-rate-limit-backoff is retired into source — see PATCHES.md.

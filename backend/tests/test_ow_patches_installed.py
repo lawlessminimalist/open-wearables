@@ -65,11 +65,10 @@ _EXPECTED_PATCHED: list[tuple[str, str, str]] = [
     # reason: it shadowed the fork's own later edit (the VO2max sync added to
     # load_and_save_all on 2026-08-29 never ran in production). Asserting these
     # are patched would enshrine that hazard.
-    (
-        "app.services.providers.garmin_connect.workouts",
-        "GarminConnectWorkouts.load_data",
-        "fix-garmin-connect-activity-hr-samples",
-    ),
+    # NOTE: GarminConnectWorkouts.load_data is not listed either — its patch
+    # (fix-garmin-connect-activity-hr-samples) was retired into source on
+    # 2026-09-13 for the same fork-owned-file reason, found by
+    # `check_upstream.py --lint`.
     # --- repositories ---
     (
         "app.repositories.health_score_repository",

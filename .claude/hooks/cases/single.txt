@@ -1,0 +1,47 @@
+# ALLOW|<command>  or  DENY|<command>. One per line. Run: python3 .claude/hooks/test_block_upstream_pr.py
+DENY|gh pr create --title "x" --body "y"
+DENY|gh pr create --repo the-momentum/open-wearables --title x
+ALLOW|gh pr create --repo lawlessminimalist/open-wearables --base main --head b --title x
+ALLOW|gh pr create -R lawlessminimalist/open-wearables --title x
+ALLOW|gh pr create --repo=lawlessminimalist/open-wearables --title x
+ALLOW|gh pr create --repo "lawlessminimalist/open-wearables" --title x
+ALLOW|gh pr create -Rlawlessminimalist/open-wearables --title x
+ALLOW|(cd backend && gh pr create --repo lawlessminimalist/open-wearables --title x)
+DENY|gh pr edit 14 --title x
+ALLOW|gh pr edit 14 --repo lawlessminimalist/open-wearables --title x
+DENY|gh pr close 1611 --repo the-momentum/open-wearables
+DENY|gh pr close 1611
+DENY|gh pr merge 1611
+DENY|gh pr comment 1611 --body hi
+DENY|gh pr review 1611 --approve
+DENY|gh issue create --title x
+DENY|gh release create v1 --notes x
+ALLOW|gh pr merge 14 --repo lawlessminimalist/open-wearables --squash
+DENY|gh api repos/the-momentum/open-wearables/pulls -X POST
+DENY|gh api repos/foo/bar/pulls -X POST -f title=x
+ALLOW|gh api repos/lawlessminimalist/open-wearables/pulls -X POST -f title=x
+ALLOW|gh api repos/foo/bar/pulls
+ALLOW|gh pr view 14 --repo lawlessminimalist/open-wearables
+ALLOW|gh pr checks 14
+ALLOW|gh run list --limit 5
+DENY|GH_REPO=the-momentum/open-wearables gh pr merge 5
+DENY|bash -c "gh pr create --title x"
+ALLOW|bash -c "gh pr create --title x --repo lawlessminimalist/open-wearables"
+ALLOW|git push -u origin reconcile/upstream-2026-09-13
+DENY|git push upstream main
+DENY|git push "upstream" main
+DENY|git push --repo=upstream main
+DENY|git -C /tmp push upstream main
+DENY|git push https://github.com/the-momentum/open-wearables.git main
+ALLOW|git fetch upstream && git merge upstream/main
+ALLOW|cd backend && git push origin HEAD
+ALLOW|ls -la
+ALLOW|git commit -q -m "fix: see the-momentum/open-wearables#1611; gh pr create needs --repo" && git push -q origin reconcile/upstream-2026-09-13
+ALLOW|grep -rn the-momentum/open-wearables FORK.md
+DENY|cd /tmp && GH_TOKEN=x gh pr create --title x
+DENY|git push origin main; gh pr create --title x
+ALLOW|git push origin main; gh pr create --title x --repo lawlessminimalist/open-wearables
+DENY|gh pr create --repo lawlessminimalist/open-wearables --body "see the-momentum/open-wearables#1611"
+DENY|gh repo delete lawlessminimalist/other --yes
+ALLOW|gh repo view lawlessminimalist/open-wearables
+ALLOW|echo done

@@ -7,7 +7,7 @@ fork-internal reconcile PR on the-momentum/open-wearables (#1611).
 Defence in depth — this hook is the LAST layer, not the only one:
   * .claude/settings.json sets GH_REPO=<fork> for every command Claude runs, so gh's
     default target is the fork even when --repo is omitted.
-  * `git remote set-url --push upstream no_push` is applied per clone (FORK.md §5).
+  * `git remote set-url --push upstream no_push` is applied per clone (FORK.md section 5).
 
 How it reads a command: backslash-newline continuations are joined, heredoc bodies are
 removed, then the text is split into simple commands on UNQUOTED newline / ; / && / || / |

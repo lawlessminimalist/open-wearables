@@ -76,7 +76,6 @@ _PROVIDER_FILES: dict[str, list[Path]] = {
     "garmin_connect": [
         _REPO_ROOT / "backend/app/services/providers/garmin_connect/data_247.py",
         _REPO_ROOT / "backend/app/services/providers/garmin_connect/workouts.py",
-        _PATCH_DIR / "fix-garmin-connect-activity-hr-samples.py",
     ],
 }
 

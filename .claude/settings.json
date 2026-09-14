@@ -1,6 +1,8 @@
 {
   "env": {
-    "GH_REPO": "lawlessminimalist/open-wearables"
+    "GH_REPO": "lawlessminimalist/open-wearables",
+    "OW_AGENT_METRICS_URL": "http://otel.lab.homelab-dhlaw.uk:30800/v1/metrics",
+    "OW_AGENT_METRICS_FALLBACK_IP": "100.88.212.12"
   },
   "hooks": {
     "PreToolUse": [
@@ -12,6 +14,40 @@
             "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/block-upstream-pr.sh",
             "timeout": 10,
             "statusMessage": "Checking command does not target upstream"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/agent_telemetry.py",
+            "timeout": 30,
+            "async": true
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/agent_telemetry.py",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/agent_telemetry.py --idle-notice",
+            "timeout": 10
           }
         ]
       }
