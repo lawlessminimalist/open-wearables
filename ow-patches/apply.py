@@ -32,6 +32,9 @@ PATCHES_ENABLED: dict[str, bool] = {
     # avg_hrv_rmssd_ms / avg_respiratory_rate / avg_spo2_percent in
     # get_sleep_summaries itself. See PATCHES.md.
     "fix-hrv-nightly-aggregate": False,
+    # Retired 2026-09-20: upstream 7b61152d computes avg_pace_sec_per_km in the
+    # list path, and its route passes include= which this copy never accepted.
+    # Not wired in _STANDALONE_PATCHES; flipping this alone installs nothing.
     "fix-pace-null": False,
     "fix-calories-total-mislabelled": True,
     "fix-spo2-respiratory-missing": True,

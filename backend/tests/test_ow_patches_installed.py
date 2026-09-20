@@ -100,7 +100,7 @@ _EXPECTED_PATCHED: list[tuple[str, str, str]] = [
         "DataPointSeriesRepository.get_daily_intensity_minutes",
         "fix-activity-summary-utc-bucketing",
     ),
-    # --- services ---
+    # No service-level symbol is patched since fix-pace-null retired on 2026-09-20.
 ]
 
 # Composed decorators live on the singleton, wrapped by apply.py's composers.
