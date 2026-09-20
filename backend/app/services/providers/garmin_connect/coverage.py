@@ -70,7 +70,7 @@ TIMESERIES: frozenset[SeriesType] = frozenset(
         SeriesType.resting_heart_rate,
         # get_stats (per-day)
         SeriesType.steps,
-        SeriesType.energy,
+        SeriesType.active_energy,
         SeriesType.basal_energy,
         SeriesType.distance_walking_running,
         SeriesType.flights_climbed,
