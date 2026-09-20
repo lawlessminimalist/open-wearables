@@ -20,4 +20,4 @@ Open work for this fork, kept current as work lands. Read it at session start. F
 
 ## Upstream candidates
 
-These are opened from a clean clone of upstream, never from this checkout: `compute_avg_pace_sec_per_km` for the workout list, whose detail view raises when `distance` is None; a repository-owner gate on `publish-images.yml`, since forks inherit its nightly schedule; and the stale docstring on `get_daily_activity_aggregates`, which omits `active_time_minutes`.
+These are opened from a clean clone of upstream, never from this checkout: a repository-owner gate on `publish-images.yml`, since forks inherit its nightly schedule; and the stale docstring on `get_daily_activity_aggregates`, which omits `active_time_minutes`.

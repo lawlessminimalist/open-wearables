@@ -87,7 +87,6 @@ kubectl -n open-wearables exec deploy/app -- ls /root_project/ow-patches/apply.p
 - what_we_changed:           Pass `source=self.provider_name` (not `provider=`) when constructing TimeSeriesSampleCreate so the data_source row carries a non-null source label and consumers don't get back `"unknown"`.
 - retire_when:               Ultrahuman247Data._build_activity_samples passes `source=` (not just `provider=`) to TimeSeriesSampleCreate, OR the TimeSeriesSampleCreate constructor itself populates source from provider when source is omitted.
 - upstream_equivalent_check: providers/ultrahuman/data_247.py::source=self.provider_name
-- audit_note:                2026-09-13 vs 53de57ca — KEEP. providers/ultrahuman/ untouched upstream in the range.
 - local_patch_file:          ow-patches/local/fix-hrv-source-unknown.py
 
 ---
@@ -112,15 +111,16 @@ kubectl -n open-wearables exec deploy/app -- ls /root_project/ow-patches/apply.p
 ## fix-pace-null
 
 - patch_id:                  fix-pace-null
-- status:                    upstream_candidate
+- status:                    retired
 - upstream_url:              https://github.com/the-momentum/open-wearables
 - upstream_issue_or_pr:      null
 - file:                      backend/app/services/event_record_service.py
 - symbol:                    EventRecordService.get_workouts
 - what_we_changed:           Compute avg_pace_sec_per_km in the workout list response (was hard-coded None) using the same derivation as the detailed view: 1000/average_speed if present, else duration_seconds/(distance_meters/1000), restricted to WORKOUTS_WITH_PACE.
+- retired_in:                upstream 7b61152d ("provider and exact-type filters on the workout list", #1637), reconciled 2026-09-20
 - retire_when:               Workout list response (get_workouts → Workout.avg_pace_sec_per_km) returns a non-null int for running/walking/cycling workouts that have distance and duration.
 - upstream_equivalent_check: _compute_avg_pace_sec_per_km
-- rebased_note:              2026-09-13: rebased onto upstream 53de57ca. Upstream #1510 (e5955636) added `name=details.label`, `entry_source=details.entry_source` and `intensity=details.intensity` to the `Workout(...)` constructor in get_workouts; the wholesale copy still passed `name=None` and lacked the other two, so the LIST endpoint returned all three as null while the DETAIL endpoint populated them — FORK.md failure mode #4, invisible to the suite (test_workouts.py only asserts id/type/start/end/duration). Re-applied all three. Verified `dad8b3be` touched only the sleep-webhook kwargs, not get_workouts. retire_when NOT met: upstream still hard-codes `avg_pace_sec_per_km=None` (event_record_service.py ~L828). NOTE test_ow_patches_column_drift.py does not cover service-level patches — this drift class has no guard; see the reconcile report.
+- retirement_note:           2026-09-20: RETIRED. Upstream 7b61152d added a module-level `pace_sec_per_km(distance_meters, seconds)` helper (event_record_service.py) and calls it from the list path with `moving_time_seconds` preferred over `duration_seconds`, so retire_when is met in substance; upstream returns a one-decimal float (300.0) where the patch returned an int, and computes pace for any workout type with distance and time rather than only WORKOUTS_WITH_PACE. Upstream also deliberately dropped the patch's `1000/average_speed` branch because average_speed units differ by provider (Suunto km/h vs m/s), so the patch was wrong for Suunto. The patch had to go regardless: upstream's route now calls `get_workouts(db, user_id, params, include=include)` (#1615) and the patch's copy had no `include` parameter, so every GET /events/workouts would have raised TypeError; it also lacked thirteen new Workout(...) kwargs (heart_rate_min, steps_count, average_speed, max_speed, average_cadence, average_watts, max_watts, moving_time_seconds, elev_high, elev_low, hr_zones, power_zones, segments). Lesson recorded: the `upstream_equivalent_check` marker `_compute_avg_pace_sec_per_km` could never match upstream's differently named helper; markers are a weak signal and the body diff is what found this. Accepted change: pace values are now floats and Suunto workouts, if any, change value (a correction).
 - local_patch_file:          ow-patches/local/fix-pace-null.py
 
 ---
@@ -138,7 +138,7 @@ kubectl -n open-wearables exec deploy/app -- ls /root_project/ow-patches/apply.p
 - what_we_changed:           Persist `bmrKilocalories` as SeriesType.basal_energy from both Garmin providers, surface it on ActivitySummary as basal_calories_kcal, and stop computing total_calories_kcal as `active + 0` when basal is missing — return null so the field name is honest (active+basal, not active-only).
 - retire_when:               Garmin daily-stats normalization persists basal energy AND ActivitySummary.total_calories_kcal is null when basal is missing (not equal to active_calories_kcal) AND ActivitySummary.basal_calories_kcal is populated.
 - upstream_equivalent_check: basal_calories_kcal
-- audit_note:                2026-09-13 vs 53de57ca — KEEP. check_upstream.py flagged e5955636, but that commit did not touch summaries_service.py (it only added entry_source/label to garmin/coverage.py WORKOUT_FIELDS); `git log f766b5a0..53de57ca -- summaries_service.py` is empty. Composer signature `(self, db_session, user_id, start_date, end_date, cursor, limit, sort_order="asc")` still matches upstream exactly; DAILIES_SERIES basal tuple intact and consumed the same way; upstream still computes total = active + (basal or 0) and never sets basal_calories_kcal, so retire_when is unmet.
+- audit_note_2: 2026-09-20 — KEEP. The structural half in garmin/coverage.py conflicted with b6c0e2b2 (energy -> active_energy rename); resolved by taking upstream's `("active_calories", SeriesType.active_energy)` and keeping the fork's `("bmr_calories", SeriesType.basal_energy)` line. get_activity_summaries hash unchanged.
 - local_patch_file:          ow-patches/local/fix-calories-total-mislabelled.py
 
 ---
@@ -154,7 +154,6 @@ kubectl -n open-wearables exec deploy/app -- ls /root_project/ow-patches/apply.p
 - what_we_changed:           Map Ultrahuman intraday SpO2 (spo2/oxygen_saturation/blood_oxygen) and respiratory rate (respiratory_rate/breath_rate/breathing_rate/breath) tokens to SeriesType.oxygen_saturation and SeriesType.respiratory_rate. Fall back to the Sleep object's `spo2.value` (single nightly average emitted at sleep midpoint) when intraday samples aren't returned.
 - retire_when:               get_timeseries response for ultrahuman provider returns at least one record with type=oxygen_saturation or type=respiratory_rate when the user has data for those metrics.
 - upstream_equivalent_check: providers/ultrahuman/data_247.py::_RESPIRATORY_TYPES
-- audit_note:                2026-09-13 vs 53de57ca — KEEP. providers/ultrahuman/ untouched upstream in the range.
 - local_patch_file:          ow-patches/local/fix-spo2-respiratory-missing.py
 
 ---
@@ -171,7 +170,6 @@ kubectl -n open-wearables exec deploy/app -- ls /root_project/ow-patches/apply.p
 - what_we_changed:           Make Ultrahuman sleep-stage parsing robust to capitalization and key-name variants (deep / Deep Sleep / deep_sleep; stage_time / duration). Always emit the SleepStagesSummary object on SleepSummary responses (with null fields if the source doesn't track stages) so consumers can distinguish "source doesn't expose stages" from "feature not implemented". The summary-side change is now a decorator over upstream's get_sleep_summaries (ensure_stages_object), not a wholesale replacement — see apply.py.
 - retire_when:               get_sleep_summary response.data[*].stages is always an object (never null/missing) when sleep records exist, AND ultrahuman sleep stages parse correctly when upstream returns them with the canonical type tokens.
 - upstream_equivalent_check: stage_aliases
-- audit_note:                2026-09-13 vs 53de57ca — KEEP. Upstream did not touch providers/ultrahuman/ or summaries_service.py in the range; sleep composer signature `(self, db_session, user_id, start_date, end_date, cursor, limit)` still matches; SleepStagesSummary fields unchanged.
 - local_patch_file:          ow-patches/local/fix-sleep-stages-missing.py
 
 ---
@@ -189,7 +187,6 @@ kubectl -n open-wearables exec deploy/app -- ls /root_project/ow-patches/apply.p
 - what_we_changed:           Added User.timezone (IANA, VARCHAR(50)) DB column + migration; added timezone, start_time_local, end_time_local fields to SleepSummary; populated them in get_sleep_summaries from the user's timezone. The DB column and migration are structural and not toggleable from apply.py — only the response population is. The population is now a decorator over upstream's get_sleep_summaries (apply_timezone_fields), not a wholesale replacement — see apply.py. With the patch disabled, the columns/fields exist but contain None.
 - retire_when:               UserRead response includes a timezone field AND sleep summaries surface a per-record local datetime or a top-level user.timezone the consumer can apply.
 - upstream_equivalent_check: start_time_local
-- audit_note:                2026-09-13 vs 53de57ca — KEEP. Written fields (timezone, start_time_local, end_time_local) are fork-structural on SleepSummary and survived the merge; upstream still has no User.timezone.
 - local_patch_file:          ow-patches/local/fix-sleep-timezone.py
 
 ---
@@ -205,7 +202,7 @@ kubectl -n open-wearables exec deploy/app -- ls /root_project/ow-patches/apply.p
 - what_we_changed:           Bucket the three daily activity aggregator queries by user-local date instead of UTC. Resolves the bug where workouts crossing a UTC midnight (e.g. a Sunday morning trail run in Brisbane that starts 21:14 UTC Saturday) split across two day-cards in the API and the user's "Sunday" card shows post-run HR (~81/128) instead of trail-run HR (~161/186). Zone-offset-first: honour a populated EventRecord.zone_offset, else `(recorded_at AT TIME ZONE user.timezone)::date`, else UTC.
 - retire_when:               DataPointSeriesRepository.get_daily_activity_aggregates groups by user-local date (any of: AT TIME ZONE user.timezone, ZoneInfo-based bucketing, per-row zone_offset cast). Marker: any reference to `_local_date_bucket_expr` or equivalent timezone-aware bucketing helper in DataPointSeriesRepository.
 - upstream_equivalent_check: backend/app/repositories/data_point_series_repository.py::_local_date_bucket_expr
-- rebased_note_3:            2026-09-13: audited against upstream 53de57ca — KEEP AS-IS. check_upstream.py flagged c8409b55 / 7bc9c27e / 6c672e74 as shadow risk; all three touched other parts of the file (user timeline counts, WriteCounts, the COPY+staging bulk upsert). ast-extracted bodies of the three replaced methods are identical between f766b5a0 and 53de57ca, and the patch differs from them only by the local_date coalesce + `_resolve_user_timezone`. Follow-ups noted, not done here: `User.timezone` is not validated as an IANA name anywhere (a typo would 500 every summary request for that user via `func.timezone`); archival_repository still buckets archived days in UTC, so archive/live merge keys will disagree once archival is enabled.
+- audit_note: 2026-09-20 vs upstream 4aa4dbf5 (0.9.0) — KEEP AS-IS. check_upstream.py flagged get_daily_activity_aggregates as changed; the ast-extracted upstream diff since 53de57ca is one line, `SeriesType.energy` -> `SeriesType.active_energy` (b6c0e2b2, #1643), which was re-applied to the patch in the same reconcile. get_daily_active_minutes and get_daily_intensity_minutes are hash-identical. Patch vs upstream now differs only by the local_date coalesce + `_resolve_user_timezone` and docstring indentation. retire_when not met: upstream still buckets by `coalesce(zone_offset, +00:00)`.
 - local_patch_file:          ow-patches/local/fix-activity-summary-utc-bucketing.py
 
 ---
@@ -238,7 +235,6 @@ kubectl -n open-wearables exec deploy/app -- ls /root_project/ow-patches/apply.p
 - what_we_changed:           When EventRecord.zone_offset is NULL (which is the common case for Garmin Connect / Ultrahuman sync paths), upstream falls back to UTC for the `local_sleep_date` bucketing. Replace the fallback with `(end_datetime AT TIME ZONE user.timezone)::date` so a Sunday-morning Brisbane wake doesn't land on the previous UTC day. When user.timezone is also unset, falls through to UTC (= upstream behaviour) so disabling the patch is safe.
 - retire_when:               EventRecordRepository.get_sleep_summaries falls back to a non-UTC source when zone_offset is null (i.e. uses user.timezone or any other timezone-aware mechanism for the wake-date bucket).
 - upstream_equivalent_check: backend/app/repositories/event_record_repository.py::func.timezone
-- rebased_note_3:            2026-09-13: audited against upstream 53de57ca — KEEP AS-IS. check_upstream.py flagged `dad8b3be` (#1540) as shadow risk, but its only change to this file is one line in `_build_creation` (`original_source_name`); neither replaced method changed. Both bodies re-diffed: the local_sleep_date coalesce (+ `_resolve_user_timezone`) is the only difference; physio LATERAL, provider grouping, device_type in all four places, and the 4-tuple sessions join key are intact.
 - local_patch_file:          ow-patches/local/fix-sleep-summary-utc-bucketing.py
 
 ---
@@ -254,7 +250,6 @@ kubectl -n open-wearables exec deploy/app -- ls /root_project/ow-patches/apply.p
 - what_we_changed:           When `fill_missing_sleep_scores_task` finds two sleep records for the same night (Garmin + Ultrahuman), it persists two `provider='internal'` scores — one per underlying sleep_record_id. Dedupe at read time: group by (local-date in user.timezone, category), keep the score whose underlying sleep record has the highest-priority source. Resilience/recovery scores without a sleep_record_id pass through untouched. Pagination applied after dedup so total_count reflects what consumers see. No-op when caller filters by `provider`.
 - retire_when:               HealthScoreRepository.get_with_filters returns at most one score per (local-date, category) when multiple providers have records for the same night, OR upstream offers an explicit dedupe option.
 - upstream_equivalent_check: backend/app/repositories/health_score_repository.py::provider_order
-- audit_note:                2026-09-13 vs 53de57ca — KEEP. health_score_repository.py and models/health_score.py untouched upstream in the range.
 - local_patch_file:          ow-patches/local/fix-health-score-source-priority.py
 
 ---
@@ -326,7 +321,7 @@ kubectl -n open-wearables exec deploy/app -- ls /root_project/ow-patches/apply.p
 - migration:                 backend/migrations/versions/2026_08_20_0600-c4d5e6f7a8b9_fix_garmin_connect_provider_mislabel.py repairs rows already written. Scoped to rows whose `source` identifies garmin_connect, so official-garmin rows are untouched, and skips rows that would collide with uq_data_source_identity.
 - retire_when:               ProviderName.from_source_string resolves "garmin_connect" to ProviderName.GARMIN_CONNECT. Marker: any longest-match / sorted-by-length logic or an explicit alias table inside from_source_string.
 - upstream_equivalent_check: backend/app/schemas/enums/provider.py::key=lambda
-- audit_note:                2026-09-13 vs 53de57ca — KEEP. Upstream 02deb366 only added `WITHINGS = "withings"`; from_source_string is still declaration-order first-substring. "withings" is neither prefix nor superstring of another value, so the longest-first patch handles it unchanged. test_provider_name.py FORK DIVERGENCE case intact; no new upstream cases.
+- audit_note_2: 2026-09-20 vs upstream 4aa4dbf5 — KEEP. Upstream 2e888c61 (#1634) replaced `GOOGLE = "google"` with `HEALTH_CONNECT = "health_connect"` and `GOOGLE_HEALTH = "google_health"`; from_source_string body unchanged (still declaration-order first-substring). Neither new value is a prefix or superstring of another, so longest-first handles them unchanged; "google" itself now resolves to UNKNOWN on both sides (upstream aliases it separately in constants/sdk_providers.py and constants/provider_urls.py). The FORK DIVERGENCE case in test_provider_name.py merged cleanly and is intact.
 - local_patch_file:          ow-patches/local/fix-provider-prefix-shadowing.py
 
 ---
