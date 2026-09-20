@@ -1,7 +1,15 @@
 # patch_id:        fix-pace-null
+# status:          RETIRED (upstream 7b61152d / #1637, reconciled 2026-09-20)
 # upstream_file:   backend/app/services/event_record_service.py
 # upstream_symbol: EventRecordService.get_workouts
 # retire_when:     Workout list response (get_workouts → Workout.avg_pace_sec_per_km) returns a non-null int for running/walking/cycling workouts that have distance and duration. Marker: presence of `_compute_avg_pace_sec_per_km` in upstream.
+
+#
+# RETIRED — kept for institutional memory only. Disabled in apply.py
+# (PATCHES_ENABLED["fix-pace-null"] = False) and not in _STANDALONE_PATCHES. Do
+# not re-enable: upstream's route now calls get_workouts(..., include=...) and
+# builds thirteen more Workout fields; this copy has neither and would raise
+# TypeError on every GET /events/workouts. See PATCHES.md retirement_note.
 
 """Compute avg_pace_sec_per_km in the workout list response.
 

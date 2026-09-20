@@ -30,7 +30,7 @@ Two read paths are refused by the permission classifier in this checkout, and re
 
 ## Running things
 
-Parallel Bash calls share one working directory. A `cd backend && …` in one call moved the cwd under the two calls issued alongside it, and all three failed on relative paths. Wrap any directory change in a subshell, `(cd … && …)`, or use absolute paths, and never rely on a `cd` from an earlier call. macOS has no `timeout`; background the process and `kill` it after a `sleep` inside the same command.
+Parallel Bash calls share one working directory. A `cd backend && …` in one call moved the cwd under the two calls issued alongside it, and all three failed on relative paths. Wrap any directory change in a subshell, `(cd … && …)`, or use absolute paths, and never rely on a `cd` from an earlier call. macOS has no `timeout`, and the harness blocks a `sleep` chained before another command, so cap a long-running process by starting it with `run_in_background` and reading its output file, or wait with a Monitor until-loop.
 
 The backend test fixtures need a container runtime for testcontainers Postgres and Redis, or `TEST_DATABASE_URL` and `TEST_REDIS_URL`. Every test errors at setup otherwise, which reads as ERROR rather than FAILED in the summary. On 2026-09-20 the podman machine would not start because Homebrew's podman passed `--timesync` to a krunkit too old to know it; `podman machine start --log-level debug` opens a Terminal window and hangs, so run the generated `krunkit-debug.sh` under `$TMPDIR/podman/` directly to read the error instead.
 

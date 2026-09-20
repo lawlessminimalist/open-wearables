@@ -113,13 +113,13 @@ kubectl -n open-wearables exec deploy/app -- ls /root_project/ow-patches/apply.p
 - patch_id:                  fix-pace-null
 - status:                    retired
 - upstream_url:              https://github.com/the-momentum/open-wearables
-- upstream_issue_or_pr:      null
+- upstream_issue_or_pr:      https://github.com/the-momentum/open-wearables/pull/1637
 - file:                      backend/app/services/event_record_service.py
 - symbol:                    EventRecordService.get_workouts
 - what_we_changed:           Compute avg_pace_sec_per_km in the workout list response (was hard-coded None) using the same derivation as the detailed view: 1000/average_speed if present, else duration_seconds/(distance_meters/1000), restricted to WORKOUTS_WITH_PACE.
 - retired_in:                upstream 7b61152d ("provider and exact-type filters on the workout list", #1637), reconciled 2026-09-20
 - retire_when:               Workout list response (get_workouts → Workout.avg_pace_sec_per_km) returns a non-null int for running/walking/cycling workouts that have distance and duration.
-- upstream_equivalent_check: _compute_avg_pace_sec_per_km
+- upstream_equivalent_check: pace_sec_per_km
 - retirement_note:           2026-09-20: RETIRED. Upstream 7b61152d added a module-level `pace_sec_per_km(distance_meters, seconds)` helper (event_record_service.py) and calls it from the list path with `moving_time_seconds` preferred over `duration_seconds`, so retire_when is met in substance; upstream returns a one-decimal float (300.0) where the patch returned an int, and computes pace for any workout type with distance and time rather than only WORKOUTS_WITH_PACE. Upstream also deliberately dropped the patch's `1000/average_speed` branch because average_speed units differ by provider (Suunto km/h vs m/s), so the patch was wrong for Suunto. The patch had to go regardless: upstream's route now calls `get_workouts(db, user_id, params, include=include)` (#1615) and the patch's copy had no `include` parameter, so every GET /events/workouts would have raised TypeError; it also lacked thirteen new Workout(...) kwargs (heart_rate_min, steps_count, average_speed, max_speed, average_cadence, average_watts, max_watts, moving_time_seconds, elev_high, elev_low, hr_zones, power_zones, segments). Lesson recorded: the `upstream_equivalent_check` marker `_compute_avg_pace_sec_per_km` could never match upstream's differently named helper; markers are a weak signal and the body diff is what found this. Accepted change: pace values are now floats and Suunto workouts, if any, change value (a correction).
 - local_patch_file:          ow-patches/local/fix-pace-null.py
 
