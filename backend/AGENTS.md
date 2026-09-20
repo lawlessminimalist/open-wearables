@@ -3,7 +3,7 @@
 This file extends the root AGENTS.md with backend-specific patterns.
 
 ## Tech Stack
-- Python 3.13+
+- Python 3.14+
 - FastAPI for API framework
 - SQLAlchemy 2.0 for ORM
 - PostgreSQL for database
@@ -233,6 +233,8 @@ class GarminStrategy(BaseProviderStrategy):
         return "https://apis.garmin.com"
 ```
 
+When adding a capability to one provider, check whether other providers will need it. If so, define it on the relevant shared base (`BaseProviderStrategy`, `BaseOAuthTemplate`, `BaseWebhookService`, `BaseWorkoutsTemplate`, ...) following that base's existing convention for unsupported operations, and override it in the specific provider rather than implementing it in isolation.
+
 ## Database Migrations
 
 Schema changes use Alembic:
@@ -401,7 +403,8 @@ app/api/routes/
 
 **Route implementation:**
 - Use `@router.method()` decorator with HTTP method and path
-- Add `response_model` (Pydantic) and `status_code` (fastapi.status)
+- Add `response_model` (Pydantic)
+- Set `status_code` (fastapi.status) only when the success response is not 200: `HTTP_201_CREATED` for creates, `HTTP_202_ACCEPTED` for background work, `HTTP_204_NO_CONTENT` for deletes without a body. FastAPI defaults to 200, so never write `status_code=status.HTTP_200_OK`
 - Define functions as `async` by default
 - Use **kebab-case** for paths: `/heart-rate`, `/import-data`
 - Keep route code minimal, delegate to services

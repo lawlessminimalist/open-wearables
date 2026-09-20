@@ -19,7 +19,7 @@ ACTIVITY_SAMPLE_SERIES: list[tuple[str, SeriesType]] = [
 # Daily summary field → SeriesType (/wellness-api/rest/dailies).
 DAILIES_SERIES: list[tuple[str, SeriesType]] = [
     ("steps", SeriesType.steps),
-    ("active_calories", SeriesType.energy),
+    ("active_calories", SeriesType.active_energy),
     # ow-patches fix-calories-total-mislabelled (structural): persist basal/BMR
     # energy so ActivitySummary can report an honest active+basal total instead
     # of active-only. The normalizer already emits "bmr_calories". Removing this
@@ -35,7 +35,7 @@ DAILIES_SERIES: list[tuple[str, SeriesType]] = [
 EPOCHS_SERIES: dict[str, SeriesType] = {
     "heart_rate": SeriesType.heart_rate,
     "steps": SeriesType.steps,
-    "energy": SeriesType.energy,
+    "energy": SeriesType.active_energy,
 }
 
 TIMESERIES: frozenset[SeriesType] = frozenset(
@@ -75,6 +75,9 @@ WORKOUT_FIELDS: frozenset[str] = frozenset(
         "total_elevation_gain",
         "entry_source",
         "label",
+        "hr_zones",
+        "power_zones",
+        "segments",
     }
 )
 
