@@ -407,7 +407,7 @@ class GarminConnect247Data(Base247DataTemplate):
 
         metric_map: list[tuple[str, SeriesType]] = [
             ("totalSteps", SeriesType.steps),
-            ("activeKilocalories", SeriesType.energy),
+            ("activeKilocalories", SeriesType.active_energy),
             # Basal metabolic rate. The official garmin provider persists this via
             # DAILIES_SERIES; get_stats has carried it all along and we discarded it,
             # which is why ActivitySummary.total_calories_kcal had no basal half.

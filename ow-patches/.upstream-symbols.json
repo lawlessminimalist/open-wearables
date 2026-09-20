@@ -1,5 +1,5 @@
 {
-  "_upstream_sha": "53de57cade876df104720c0c5be07bbf462a55b1",
+  "_upstream_sha": "4aa4dbf5824506f07dcd652011d98e1eb80877e0",
   "fix-activity-summary-utc-bucketing": {
     "DataPointSeriesRepository.get_daily_active_minutes": {
       "file": "backend/app/repositories/data_point_series_repository.py",
@@ -8,7 +8,7 @@
     },
     "DataPointSeriesRepository.get_daily_activity_aggregates": {
       "file": "backend/app/repositories/data_point_series_repository.py",
-      "hash": "d2c5edfa6adcffec",
+      "hash": "8855259e18b34608",
       "kind": "body"
     },
     "DataPointSeriesRepository.get_daily_intensity_minutes": {
@@ -35,13 +35,6 @@
     "Ultrahuman247Data._build_activity_samples": {
       "file": "backend/app/services/providers/ultrahuman/data_247.py",
       "hash": "835ede186960eae9",
-      "kind": "body"
-    }
-  },
-  "fix-pace-null": {
-    "EventRecordService.get_workouts": {
-      "file": "backend/app/services/event_record_service.py",
-      "hash": "ccf66e8ab352b950",
       "kind": "body"
     }
   },

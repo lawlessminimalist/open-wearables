@@ -139,7 +139,7 @@ class TestDailyTotalsFlag:
         h, captured = handler_factory(stats=self._STATS)
         h.save_daily_stats_for_date(None, uuid4(), date(2026, 8, 18))  # type: ignore[arg-type]
         by_type = {s.series_type: s for s in captured}
-        for st in (SeriesType.steps, SeriesType.energy, SeriesType.distance_walking_running):
+        for st in (SeriesType.steps, SeriesType.active_energy, SeriesType.distance_walking_running):
             assert by_type[st].is_daily_total is True, f"{st} must be flagged a daily total"
 
     def test_non_sum_series_are_not_flagged(self, handler_factory: Any) -> None:

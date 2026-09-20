@@ -101,11 +101,6 @@ _EXPECTED_PATCHED: list[tuple[str, str, str]] = [
         "fix-activity-summary-utc-bucketing",
     ),
     # --- services ---
-    (
-        "app.services.event_record_service",
-        "EventRecordService.get_workouts",
-        "fix-pace-null",
-    ),
 ]
 
 # Composed decorators live on the singleton, wrapped by apply.py's composers.

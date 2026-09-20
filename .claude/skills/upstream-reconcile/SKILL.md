@@ -85,6 +85,8 @@ npx --yes prettier@3.9.4 --check "src/**/*.{ts,tsx,js,jsx,json,css,md}"
 
 Use the pinned tool versions; the committed `node_modules` can resolve a different prettier than the pin and the two disagree about which files need formatting. Run the test suite in the foreground or with the `cd` inside the background command, and never pipe it through `tail`; a background run started from the wrong directory once failed to spawn pytest and the pipe reported success. Read the summary line.
 
+Regenerate the committed OpenAPI spec, which upstream's CI checks for freshness and which always differs on the fork because of the credential-provider endpoint: `cd backend && SECRET_KEY=x uv run python scripts/export_openapi.py`, then commit `docs/openapi.json`.
+
 Then confirm every patch installs against the merged tree:
 
 ```bash

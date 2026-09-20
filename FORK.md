@@ -37,7 +37,7 @@ anything.** Installation is driven by three separate mechanisms:
 **Adding a flag without wiring it produces a patch that reports as enabled
 everywhere and never runs.** That has happened twice — see section 3.
 
-Current state (2026-09-13): 15 backend patches registered, 11 enabled, 4 retired, 7 standalone, 3 composed (plus 3 `structural` entries: celery-late-acks, historical-sync-chunking, frontend-display-timezone).
+Current state (2026-09-20): 15 backend patches registered, 10 enabled, 5 retired, 6 standalone, 3 composed, 1 inline (plus 5 `structural` entries: celery-late-acks, ci-publish-images-upstream-only, celery-worker-signal-forwarding, historical-sync-chunking, frontend-display-timezone).
 
 ### `replacement_kind` and why it matters
 

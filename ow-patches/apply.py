@@ -32,7 +32,7 @@ PATCHES_ENABLED: dict[str, bool] = {
     # avg_hrv_rmssd_ms / avg_respiratory_rate / avg_spo2_percent in
     # get_sleep_summaries itself. See PATCHES.md.
     "fix-hrv-nightly-aggregate": False,
-    "fix-pace-null": True,
+    "fix-pace-null": False,
     "fix-calories-total-mislabelled": True,
     "fix-spo2-respiratory-missing": True,
     "fix-sleep-stages-missing": True,
@@ -226,7 +226,7 @@ def _compose_activity_summaries() -> None:
 # ---------------------------------------------------------------------------
 _STANDALONE_PATCHES = (
     "fix-hrv-source-unknown",
-    "fix-pace-null",
+    # fix-pace-null is retired — upstream #1637 computes pace in the list path. See PATCHES.md.
     "fix-spo2-respiratory-missing",
     "fix-activity-summary-utc-bucketing",
     # fix-garmin-connect-activity-hr-samples is retired into source — see PATCHES.md.
