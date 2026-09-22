@@ -18,6 +18,7 @@ Open work for this fork, kept current as work lands. Read it at session start. F
 
 - Extend `test_ow_patches_column_drift.py` to `self.model.*` and `SeriesType.*` references and result-dict keys, or retire it in favour of the shadow-drift hash.
 - Wire `.pre-commit-config.yaml` per clone and add the language-agnostic gate rules for `.env` files, database files, size caps and binary magic bytes.
+- The podman/krunkit fix recorded on 2026-09-20 (`brew trust libkrun/krun && brew install krunkit`) was never applied on this machine, yet `podman machine start` and the full backend suite ran clean on 2026-09-22. The root cause of the original `krunkit exited unexpectedly with exit code 2` is unconfirmed, so if it recurs here or on another clone, apply that fix rather than assuming it is permanently resolved.
 
 ## Upstream candidates
 
