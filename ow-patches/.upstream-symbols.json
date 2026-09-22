@@ -1,5 +1,5 @@
 {
-  "_upstream_sha": "4aa4dbf5824506f07dcd652011d98e1eb80877e0",
+  "_upstream_sha": "6c2f28a32b0f9985ef1d3735df3cda2f61cb143c",
   "fix-activity-summary-utc-bucketing": {
     "DataPointSeriesRepository.get_daily_active_minutes": {
       "file": "backend/app/repositories/data_point_series_repository.py",

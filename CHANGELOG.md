@@ -2,6 +2,12 @@
 
 Dated entries, newest first, describing what moved and why so the next session can read this before exploring. Upstream has no CHANGELOG.md, so this file is fork-owned and never conflicts. Entries stay short; the reasoning lives in the linked files.
 
+## 2026-09-22
+
+The reconcile onto upstream 4aa4dbf5..6c2f28a3 landed on `reconcile/upstream-2026-09-22`, a single upstream commit adding a HEAD probe to the Withings OAuth callback URL. It touched only `oauth.py`, its tests and the OpenAPI spec, none of which any registered patch covers, so the drift checker reported zero changed symbols and the merge needed no conflict resolution and no shadow audit. `ty`, the migration guard, ruff, the full backend suite, the frontend lint/build/prettier chain and the patch install loop all passed; the regenerated `docs/openapi.json` matched the merge exactly.
+
+The backend suite ran locally end to end for the first time since the podman/krunkit blocker was logged on 2026-09-20 (2687 passed, 2 skipped, ~76s): `podman machine start` now succeeds on this machine without the fix recorded in `TODO.md`, so that item is removed rather than carried forward stale.
+
 ## 2026-09-20
 
 The reconcile onto upstream 0.9.0 (4aa4dbf5, 45 commits) landed on `reconcile/upstream-2026-09-20`. Upstream moved the backend to Python 3.14, renamed the `energy` series to `active_energy` keeping only a string alias, split the Google provider into `health_connect` and `google_health`, added primary-lease renewal to the sync task, and gave the workout list provider and type filters, optional zones and a computed pace. Eight files conflicted, all resolved by keeping both sides except the lockfile, which was taken from upstream and re-locked with garminconnect 0.3.7.
