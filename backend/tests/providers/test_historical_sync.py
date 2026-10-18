@@ -52,6 +52,32 @@ class TestHistoricalSyncResult:
         assert result.end_date is None
 
 
+class TestHistoricalSyncSignatures:
+    """The chunk signatures must name the registered task.
+
+    The tests below mock celery_app wholesale, so they never built a real
+    Signature. Passing the CeleryTask member itself (rather than its value)
+    named every chunk "SYNC_VENDOR_DATA" and crashed apply_async with
+    "'CeleryTask' object has no attribute 'AsyncResult'" on every historical
+    sync from the portal. Only chain is mocked here.
+    """
+
+    @patch("app.services.providers.base_strategy.chain")
+    def test_chunk_signatures_name_the_registered_task(self, mock_chain: MagicMock) -> None:
+        from app.constants.celery_tasks import CeleryTask
+
+        mock_chain.return_value.apply_async.return_value = MagicMock(id="task-sig")
+
+        OuraStrategy().start_historical_sync(uuid4(), days=95)
+
+        signatures = mock_chain.call_args.args
+        assert signatures
+        for sig in signatures:
+            assert sig.task == CeleryTask.SYNC_VENDOR_DATA.value
+            assert type(sig.task) is str
+            assert sig.immutable
+
+
 class TestPullBasedHistoricalSync:
     """Tests for the default start_historical_sync (pull-based providers).
 

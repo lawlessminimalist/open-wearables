@@ -282,10 +282,14 @@ class BaseProviderStrategy(ABC):
         # account IP rate-limited and then locked. Immutable signatures (.si)
         # because each chunk takes explicit kwargs and must not receive the
         # previous chunk's return value as a positional argument.
+        #
+        # `.value`, not the bare member: Signature treats anything with a `.name`
+        # as a task object, and every enum member has one, so the member would
+        # name the task "SYNC_VENDOR_DATA" and crash apply_async on AsyncResult.
         chunks = _chunk_ranges(start_date, end_date, HISTORICAL_CHUNK_DAYS)
         signatures = [
             celery_app.signature(
-                CeleryTask.SYNC_VENDOR_DATA,
+                CeleryTask.SYNC_VENDOR_DATA.value,
                 kwargs={
                     "user_id": str(user_id),
                     "start_date": chunk_start.isoformat(),
