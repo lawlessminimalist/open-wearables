@@ -12,6 +12,7 @@ from app.integrations.celery.tasks import (
     sync_vendor_data,
 )
 from app.schemas.enums import ProviderName
+from app.schemas.responses.upload import SyncDetails, SyncQueuedResponse, SyncResponse
 from app.schemas.sync_status import SyncStatus
 from app.services import ApiKeyDep
 from app.services.providers.factory import ProviderFactory
@@ -107,7 +108,7 @@ def sync_user_data(
             description="Run sync asynchronously via Celery (default: true). Set false for sync.",
         ),
     ] = True,
-) -> dict[str, bool | dict | str]:
+) -> SyncResponse | SyncQueuedResponse:
     """
     Synchronize data from fitness provider API for a specific user.
 
@@ -162,17 +163,18 @@ def sync_user_data(
             start_date_iso = resolved_start
 
         task = _queue_pull_sync(user_id, provider.value, start_date_iso, resolved_end)
-        return {
-            "success": True,
-            "async": True,
-            "task_id": task.id,
-            "message": f"Sync task queued for {provider.value}. Check task status for results.",
-        }
+        return SyncQueuedResponse(
+            success=True,
+            is_async=True,
+            task_id=task.id,
+            message=f"Sync task queued for {provider.value}. Check task status for results.",
+        )
 
     # Synchronous mode
     strategy = factory.get_provider(provider.value)
 
-    results: dict[str, Any] = {}
+    details = SyncDetails()
+    succeeded: list[bool] = []  # per data type, so a partial 24/7 sync isn't reported as a full success
 
     # Collect all parameters. start_date/end_date come from build_sync_params so
     # this route and the async Celery task never drift on parameter naming.
@@ -190,7 +192,8 @@ def sync_user_data(
     # Sync workouts if requested
     if data_type in (SyncDataType.WORKOUTS, SyncDataType.ALL):
         if strategy.workouts:
-            results["workouts"] = strategy.workouts.load_data(db, user_id, **params)
+            details.workouts = strategy.workouts.load_data(db, user_id, **params)
+            succeeded.append(bool(details.workouts))
         elif data_type == SyncDataType.WORKOUTS:
             raise HTTPException(
                 status_code=status.HTTP_501_NOT_IMPLEMENTED,
@@ -199,41 +202,39 @@ def sync_user_data(
 
     if data_type in (SyncDataType.DATA_247, SyncDataType.ALL):
         if strategy.data_247:
-            load_fn = getattr(strategy.data_247, "load_and_save_all", None) or getattr(
-                strategy.data_247, "load_all_247_data", None
-            )
-            if load_fn is None:
-                results["data_247"] = None
+            # FORK DELTA: honour the generic start_date/end_date range (and Garmin's
+            # summary_* aliases) for the synchronous 24/7 path, not only `since`.
+            resolved_start_247 = start_date or summary_start_time
+            resolved_end_247 = end_date or summary_end_time
+
+            if resolved_start_247:
+                start_dt = datetime.fromisoformat(resolved_start_247.replace("Z", "+00:00"))
+            elif since:
+                start_dt = datetime.fromtimestamp(since, tz=timezone.utc)
             else:
-                resolved_start_247 = start_date or summary_start_time
-                resolved_end_247 = end_date or summary_end_time
+                start_dt = datetime.now(timezone.utc) - timedelta(days=30)
 
-                if resolved_start_247:
-                    start_dt = datetime.fromisoformat(resolved_start_247.replace("Z", "+00:00"))
-                elif since:
-                    start_dt = datetime.fromtimestamp(since, tz=timezone.utc)
-                else:
-                    start_dt = datetime.now(timezone.utc) - timedelta(days=30)
+            if resolved_end_247:
+                end_dt = datetime.fromisoformat(resolved_end_247.replace("Z", "+00:00"))
+            else:
+                end_dt = datetime.now(timezone.utc)
 
-                if resolved_end_247:
-                    end_dt = datetime.fromisoformat(resolved_end_247.replace("Z", "+00:00"))
-                else:
-                    end_dt = datetime.now(timezone.utc)
-
-                results["data_247"] = load_fn(db, user_id, start_time=start_dt, end_time=end_dt)
+            result_247 = strategy.data_247.load_and_save_all(db, user_id, start_time=start_dt, end_time=end_dt)
+            details.data_247 = result_247.summary()
+            succeeded.append(not result_247.all_failed)
         elif data_type == SyncDataType.DATA_247:
             raise HTTPException(
                 status_code=status.HTTP_501_NOT_IMPLEMENTED,
                 detail=f"Provider '{provider.value}' does not support 247 data (sleep/recovery/activity)",
             )
 
-    if not results:
+    if not succeeded:
         raise HTTPException(
             status_code=status.HTTP_501_NOT_IMPLEMENTED,
             detail=f"Provider '{provider.value}' does not support any requested data types",
         )
 
-    return {"success": all(results.values()), "details": results}
+    return SyncResponse(success=all(succeeded), details=details)
 
 
 # =============================================================================

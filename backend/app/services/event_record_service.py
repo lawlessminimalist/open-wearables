@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import event as sa_event
 from sqlalchemy.orm import Query
 
+from app.config import settings
 from app.database import DbSession
 from app.models import (
     DataPointSeries,
@@ -15,7 +16,9 @@ from app.models import (
     EventRecord,
     EventRecordDetail,
     HealthScore,
+    MealDetails,
     MenstrualCycleDetails,
+    ProviderPriority,
     SleepDetails,
     WorkoutDetails,
 )
@@ -25,14 +28,19 @@ from app.repositories import (
     EventRecordDetailRepository,
     EventRecordRepository,
     HealthScoreRepository,
+    ProviderPriorityRepository,
 )
-from app.schemas.enums import HealthScoreCategory
+from app.repositories.data_point_series_repository import WorkoutWindow
+from app.repositories.data_type_coverage_repository import data_type_coverage_repository
+from app.repositories.device_type_priority_repository import DeviceTypePriorityRepository
+from app.schemas.enums import HealthScoreCategory, SeriesType, get_series_type_unit
 from app.schemas.model_crud.activities import (
     EventRecordCreate,
     EventRecordDetailCreate,
     EventRecordQueryParams,
     EventRecordResponse,
     EventRecordUpdate,
+    MealDetailCreate,
     MenstrualCycleDetailCreate,
     SleepInclude,
     WorkoutInclude,
@@ -40,10 +48,15 @@ from app.schemas.model_crud.activities import (
 from app.schemas.model_crud.activities.sleep import SleepStage
 from app.schemas.model_crud.activities.zones import HRZones, PowerZones
 from app.schemas.responses.activity import (
+    Macros,
+    Meal,
     MenstrualCycleRecord,
+    NutrientValue,
     SleepSession,
     SleepStagesSummary,
+    SleepTotals,
     Workout,
+    WorkoutTotals,
 )
 from app.schemas.utils import (
     PaginatedResponse,
@@ -54,13 +67,38 @@ from app.schemas.utils import (
     SourceMetadata as DataSourceSchema,
 )
 from app.services.outgoing_webhooks import svix as svix_service
-from app.services.outgoing_webhooks.events import on_menstrual_cycle_created, on_sleep_created, on_workout_created
-from app.services.priority_service import priority_service
+from app.services.outgoing_webhooks.events import (
+    on_meal_created,
+    on_menstrual_cycle_created,
+    on_sleep_created,
+    on_workout_created,
+)
 from app.services.scores.sleep_service import sleep_score_service
 from app.services.services import AppService
+from app.utils.context import current_sync_payload
 from app.utils.conversion import as_dict_list, as_float, as_model, minutes_to_seconds
 from app.utils.exceptions import handle_exceptions
 from app.utils.pagination import encode_cursor
+
+
+def _meal_summary(nutrients: dict[SeriesType, float]) -> tuple[float | None, Macros | None, float | None]:
+    """Calories, macros (None when none recorded) and water for a meal, as /events/meals and meal.created show them."""
+    macros = Macros(
+        protein_g=nutrients.get(SeriesType.dietary_protein),
+        carbohydrates_g=nutrients.get(SeriesType.dietary_carbohydrates),
+        fat_g=nutrients.get(SeriesType.dietary_fat_total),
+        fiber_g=nutrients.get(SeriesType.dietary_fiber),
+    )
+    has_macros = any(v is not None for v in macros.model_dump().values())
+    return (
+        nutrients.get(SeriesType.dietary_energy_consumed),
+        macros if has_macros else None,
+        nutrients.get(SeriesType.hydration),
+    )
+
+
+def _nutrient_values(nutrients: dict[SeriesType, float]) -> dict[str, NutrientValue]:
+    return {t.value: NutrientValue(value=v, unit=get_series_type_unit(t)) for t, v in nutrients.items()}
 
 
 def pace_sec_per_km(distance_meters: float | None, seconds: int | None) -> float | None:
@@ -85,7 +123,8 @@ class EventRecordService(
         self.data_source_repo = DataSourceRepository()
         self.data_point_series_repo = DataPointSeriesRepository(DataPointSeries)
         self.health_score_repo = HealthScoreRepository(HealthScore)
-        self.priority_service = priority_service
+        self.provider_priority_repo = ProviderPriorityRepository(ProviderPriority)
+        self.device_type_priority_repo = DeviceTypePriorityRepository()
 
     def _resolve_avg_hr(
         self,
@@ -95,7 +134,8 @@ class EventRecordService(
         """Return avg HR for each workout record.
 
         Uses stored heart_rate_avg where available, falls back to a single batch query
-        against data_point_series for records that don't have it.
+        against data_point_series for records that don't have it: the workout's own source
+        first, then the other sources of the same writer.
         """
         result: dict[UUID, int | None] = {}
         missing = []
@@ -106,11 +146,17 @@ class EventRecordService(
                 result[r.id] = round(details.heart_rate_avg)
             else:
                 result[r.id] = None
-                missing.append((r.id, r.data_source_id, r.start_datetime, r.end_datetime))
+                missing.append(r)
 
         if missing:
-            computed = self.data_point_series_repo.get_avg_hr_for_workout_batch(db_session, missing)
-            result.update(computed)
+            siblings = self.data_source_repo.get_writer_siblings(db_session, {r.data_source_id for r in missing})
+            windows = [
+                WorkoutWindow(
+                    r.id, r.data_source_id, r.start_datetime, r.end_datetime, siblings.get(r.data_source_id, ())
+                )
+                for r in missing
+            ]
+            result.update(self.data_point_series_repo.get_avg_hr_for_workout_batch(db_session, windows))
 
         return result
 
@@ -180,11 +226,11 @@ class EventRecordService(
         # Fire the webhook directly with fresh fetches rather than via after_commit — using
         # after_commit defers the call to the *next* session commit, at which point SQLAlchemy
         # has expired the captured ORM objects, causing lazy-load failures inside after_commit.
-        record = db_session.get(EventRecord, detail.record_id)
+        record = self.crud.get(db_session, detail.record_id)
         if record is not None and record.data_source_id is not None:
-            data_source = db_session.get(DataSource, record.data_source_id)
+            data_source = self.data_source_repo.get(db_session, record.data_source_id)
             if data_source is not None:
-                self._emit_event_record_webhook(record, data_source, detail)
+                self._emit_event_record_webhook(record, data_source, detail, current_sync_payload())
 
         return result
 
@@ -221,6 +267,9 @@ class EventRecordService(
         on, so a second convention here produces a duplicate score instead of
         replacing the existing one.
         """
+        if not settings.ow_scores_enabled:
+            return
+
         # Widened by a day either side so a session whose local start lands on a target
         # date is still inside the window whatever its zone offset.
         window_start = datetime.combine(min(sleep_dates), time.min, tzinfo=timezone.utc) - timedelta(days=1)
@@ -272,6 +321,27 @@ class EventRecordService(
         return self.crud.find_adjacent_sleep_record(
             db_session, user_id, start_time, end_time, threshold_minutes, source=source, provider=provider
         )
+
+    def upsert_meals(
+        self,
+        db_session: DbSession,
+        meals: list[tuple[EventRecordCreate, MealDetailCreate]],
+    ) -> int:
+        """Insert or refresh meals with their details; webhooks only for new ones. Returns the number inserted."""
+        stored = self.crud.bulk_upsert_meals(db_session, [record for record, _ in meals])
+        inserted: list[EventRecordDetailCreate] = []
+        refreshed: list[EventRecordDetailCreate] = []
+        for record, detail in meals:
+            if record.id not in stored:
+                continue
+            record_id, is_inserted = stored[record.id]
+            (inserted if is_inserted else refreshed).append(detail.model_copy(update={"record_id": record_id}))
+
+        if inserted:
+            self.bulk_create_details(db_session, inserted, detail_type="meal")
+        if refreshed:
+            self.event_record_detail_repo.bulk_create(db_session, refreshed, detail_type="meal")
+        return len(inserted)
 
     def create_or_merge_sleep(
         self,
@@ -341,6 +411,7 @@ class EventRecordService(
                     if final_detail.sleep_stages
                     else None
                 ),
+                sync=current_sync_payload(),
             )
         return result
 
@@ -580,6 +651,7 @@ class EventRecordService(
         record: EventRecord,
         data_source: DataSource,
         detail: EventRecordDetailCreate,
+        sync: dict[str, str] | None = None,
     ) -> None:
         """Fire the appropriate outgoing webhook for a newly created event record."""
         if not svix_service.is_enabled():
@@ -630,6 +702,7 @@ class EventRecordService(
                         if detail.sleep_stages
                         else None
                     ),
+                    sync=sync,
                 )
             case "menstrual_cycle":
                 mcd = detail if isinstance(detail, MenstrualCycleDetailCreate) else None
@@ -646,6 +719,7 @@ class EventRecordService(
                     cycle_length=mcd.cycle_length if mcd else None,
                     is_predicted_cycle=mcd.is_predicted_cycle if mcd else None,
                     pregnancy_snapshot=mcd.pregnancy_snapshot if mcd else None,
+                    sync=sync,
                 )
             case "workout":
                 avg_pace = pace_sec_per_km(
@@ -670,6 +744,25 @@ class EventRecordService(
                     if detail.total_elevation_gain is not None
                     else None,
                     avg_pace_sec_per_km=round(avg_pace) if avg_pace is not None else None,
+                    sync=sync,
+                )
+            case "meal" if isinstance(detail, MealDetailCreate):
+                calories_kcal, macros, water_ml = _meal_summary(detail.nutrients)
+                on_meal_created(
+                    record_id=record.id,
+                    user_id=data_source.user_id,
+                    provider=provider,
+                    device=device,
+                    start_time=record.start_datetime.isoformat(),
+                    end_time=record.end_datetime.isoformat(),
+                    zone_offset=zone_offset,
+                    title=detail.title,
+                    meal_type=detail.meal_type,
+                    calories_kcal=calories_kcal,
+                    macros=macros.model_dump() if macros else None,
+                    water_ml=water_ml,
+                    nutrients={code: value.model_dump() for code, value in _nutrient_values(detail.nutrients).items()},
+                    sync=sync,
                 )
 
     def bulk_create(
@@ -698,13 +791,11 @@ class EventRecordService(
         if not record_ids:
             return
 
-        records = db_session.query(EventRecord).filter(EventRecord.id.in_(record_ids)).all()
+        records = self.crud.get_by_ids(db_session, record_ids)
         records_by_id = {r.id: r for r in records}
 
         data_source_ids = {r.data_source_id for r in records if r.data_source_id is not None}
-        data_sources = (
-            db_session.query(DataSource).filter(DataSource.id.in_(data_source_ids)).all() if data_source_ids else []
-        )
+        data_sources = self.data_source_repo.get_by_ids(db_session, data_source_ids)
         data_sources_by_id = {ds.id: ds for ds in data_sources}
 
         dispatches: list[tuple[EventRecord, DataSource, EventRecordDetailCreate]] = []
@@ -728,10 +819,12 @@ class EventRecordService(
         for data_source in data_sources:
             db_session.expunge(data_source)
 
+        sync = current_sync_payload()
+
         @sa_event.listens_for(db_session, "after_commit", once=True)
         def _dispatch_bulk_webhooks(session: DbSession) -> None:  # noqa: ARG001
             for record, data_source, detail in dispatches:
-                self._emit_event_record_webhook(record, data_source, detail)
+                self._emit_event_record_webhook(record, data_source, detail, sync)
 
     @handle_exceptions
     def _get_records_with_filters(
@@ -777,6 +870,17 @@ class EventRecordService(
             source=data_source.source,
             device=data_source.device_model,
             device_type=data_source.device_type,
+            device_id=data_source.device_id,
+        )
+
+    @handle_exceptions
+    def get_workout_totals(self, db_session: DbSession, user_id: UUID, params: EventRecordQueryParams) -> WorkoutTotals:
+        count, seconds, energy, distance = self.crud.get_workout_totals(db_session, params, str(user_id))
+        return WorkoutTotals(
+            count=count,
+            duration_seconds=seconds,
+            calories_kcal=float(energy) if energy is not None else None,
+            distance_meters=float(distance) if distance is not None else None,
         )
 
     @handle_exceptions
@@ -888,6 +992,32 @@ class EventRecordService(
             ),
         )
 
+    def _winning_sleep_ids(self, db_session: DbSession, user_id: UUID, params: EventRecordQueryParams) -> Query:
+        """An inline subquery of the top-priority source's sessions per night."""
+        provider_order = self.provider_priority_repo.get_priority_order(db_session)
+        device_type_order = self.device_type_priority_repo.get_priority_order(db_session)
+        return self.crud.winning_sleep_record_ids(db_session, str(user_id), params, provider_order, device_type_order)
+
+    @handle_exceptions
+    def get_sleep_totals(
+        self,
+        db_session: DbSession,
+        user_id: UUID,
+        params: EventRecordQueryParams,
+        filter_by_priority: bool = False,
+    ) -> SleepTotals:
+        restrict = self._winning_sleep_ids(db_session, user_id, params) if filter_by_priority else None
+        count, naps, asleep, in_bed, efficiency = self.crud.get_sleep_totals(
+            db_session, params, str(user_id), restrict_to_record_ids=restrict
+        )
+        return SleepTotals(
+            count=count,
+            naps=naps,
+            sleep_duration_seconds=asleep,
+            time_in_bed_seconds=in_bed,
+            avg_efficiency_percent=float(efficiency) if efficiency is not None else None,
+        )
+
     @handle_exceptions
     def get_sleep_sessions(
         self,
@@ -899,16 +1029,7 @@ class EventRecordService(
     ) -> PaginatedResponse[SleepSession]:
         params.category = "sleep"
         with_stages = SleepInclude.STAGES in include
-
-        # inline query that restricts records to ones
-        # with highest priority
-        restrict_to_record_ids: Query | None = None
-        if filter_by_priority:
-            provider_order = self.priority_service.priority_repo.get_priority_order(db_session)
-            device_type_order = self.priority_service.device_type_priority_repo.get_priority_order(db_session)
-            restrict_to_record_ids = self.crud.winning_sleep_record_ids(
-                db_session, str(user_id), params, provider_order, device_type_order
-            )
+        restrict_to_record_ids = self._winning_sleep_ids(db_session, user_id, params) if filter_by_priority else None
 
         records, total_count = self._get_records_with_filters(
             db_session, params, str(user_id), restrict_to_record_ids=restrict_to_record_ids
@@ -1074,6 +1195,77 @@ class EventRecordService(
             ),
         )
 
+    @handle_exceptions
+    def get_meals(
+        self,
+        db_session: DbSession,
+        user_id: UUID,
+        params: EventRecordQueryParams,
+    ) -> PaginatedResponse[Meal]:
+        params.category = "meal"
+        records, total_count = self._get_records_with_filters(db_session, params, str(user_id))
+
+        limit = params.limit or 20
+        has_more = len(records) > limit
+        is_backward = params.cursor and params.cursor.startswith("prev_")
+
+        if has_more:
+            records = records[-limit:] if is_backward else records[:limit]
+
+        next_cursor = None
+        previous_cursor = None
+
+        if records:
+            if has_more:
+                last_record, _ = records[-1]
+                next_cursor = encode_cursor(last_record.start_datetime, last_record.id, "next")
+            if params.cursor:
+                if is_backward:
+                    if has_more:
+                        first_record, _ = records[0]
+                        previous_cursor = encode_cursor(first_record.start_datetime, first_record.id, "prev")
+                else:
+                    first_record, _ = records[0]
+                    previous_cursor = encode_cursor(first_record.start_datetime, first_record.id, "prev")
+
+        data = []
+        for record, data_source in records:
+            details: MealDetails | None = record.meal_detail
+            nutrients = {
+                SeriesType(code): value
+                for code, value in (details.nutrients if details else {}).items()
+                if code in SeriesType.__members__
+            }
+            calories_kcal, macros, water_ml = _meal_summary(nutrients)
+            data.append(
+                Meal(
+                    id=record.id,
+                    timestamp=record.start_datetime,
+                    meal_type=details.meal_type if details else None,
+                    name=details.title if details else None,
+                    source=self._map_source(data_source),
+                    calories_kcal=calories_kcal,
+                    macros=macros,
+                    water_ml=water_ml,
+                    nutrients=_nutrient_values(nutrients),
+                )
+            )
+
+        return PaginatedResponse(
+            data=data,
+            pagination=Pagination(
+                has_more=has_more,
+                next_cursor=next_cursor,
+                previous_cursor=previous_cursor,
+                total_count=total_count,
+            ),
+            metadata=TimeseriesMetadata(
+                sample_count=len(data),
+                start_time=params.start_datetime,
+                end_time=params.end_datetime,
+            ),
+        )
+
     def delete_event_record(
         self,
         db_session: DbSession,
@@ -1088,7 +1280,11 @@ class EventRecordService(
         data_source = self.data_source_repo.get(db_session, record.data_source_id)
         if not data_source or data_source.user_id != user_id:
             return False
-        self.crud.delete(db_session, record)
+        self.crud.delete_flush(db_session, record)
+        data_type_coverage_repository.refresh_events(
+            db_session, [(data_source.user_id, data_source.provider, record.category)]
+        )
+        db_session.commit()
         return True
 
 

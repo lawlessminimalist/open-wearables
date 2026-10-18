@@ -4,7 +4,7 @@ from app.schemas.enums.health_score_category import HealthScoreCategory
 # Timeseries mappings (handler key → SeriesType) consumed directly by data_247.py.
 ACTIVITY_SAMPLE_SERIES: dict[str, SeriesType] = {
     "heart_rate": SeriesType.heart_rate,
-    "hrv": SeriesType.heart_rate_variability_sdnn,
+    "hrv": SeriesType.heart_rate_variability_rmssd,
     "temperature": SeriesType.skin_temperature,
     "steps": SeriesType.steps,
     # Fork patch fix-spo2-respiratory-missing: intraday SpO2 / respiratory-rate
@@ -15,11 +15,18 @@ ACTIVITY_SAMPLE_SERIES: dict[str, SeriesType] = {
     "respiratory_rate": SeriesType.respiratory_rate,
 }
 
+# Single daily values (handler key → SeriesType), each carrying its own day_start_timestamp.
+DAILY_SCALAR_SERIES: dict[str, SeriesType] = {
+    "vo2_max": SeriesType.vo2_max,
+    "active_minutes": SeriesType.exercise_time,
+    "sleep_rhr": SeriesType.resting_heart_rate,
+    "temperature_deviation": SeriesType.skin_temperature_deviation,
+}
+
 TIMESERIES: frozenset[SeriesType] = frozenset(
     {
         *ACTIVITY_SAMPLE_SERIES.values(),  # /user_data/metrics (hr, hrv, temp, steps, spo2, respiratory_rate)
-        SeriesType.vo2_max,  # /user_data/metrics (vo2_max)
-        SeriesType.active_time,  # /user_data/metrics (active_minutes)
+        *DAILY_SCALAR_SERIES.values(),  # /user_data/metrics, one value per day
     }
 )
 

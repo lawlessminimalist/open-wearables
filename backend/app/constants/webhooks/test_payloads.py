@@ -12,6 +12,7 @@ from app.schemas.webhooks.event_types import WebhookEventType
 _USER_ID = "00000000-0000-0000-0000-000000000002"
 _RECORD_ID = "00000000-0000-0000-0000-000000000001"
 _CONNECTION_ID = "00000000-0000-0000-0000-000000000003"
+_RUN_ID = "sdk_9f3c8ea41b2d5c07"
 
 _SOURCE_GARMIN = {"provider": "garmin", "device": "Garmin Fenix 7"}
 _SOURCE_OURA = {
@@ -75,6 +76,51 @@ EXAMPLE_PAYLOADS: dict[str, dict] = {
         },
     },
     # ------------------------------------------------------------------
+    # Per-data-type sync outcomes
+    # ------------------------------------------------------------------
+    WebhookEventType.SYNC_DATA_TYPE_COMPLETED: {
+        "type": WebhookEventType.SYNC_DATA_TYPE_COMPLETED,
+        "data": {
+            "user_id": _USER_ID,
+            "provider": "apple",
+            "source": "sdk",
+            "scope": "historical",
+            "run_id": _RUN_ID,
+            "data_type": "heart_rate",
+            "native_data_type": "HKQuantityTypeIdentifierHeartRate",
+            "kind": "series",
+            "status": "success",
+            "items_reported": 41230,
+            "items_inserted": 41230,
+            "items_updated": 0,
+            "written": {"start": "2024-01-01T00:00:00+00:00", "end": "2024-03-31T23:59:00+00:00"},
+            "coverage": {"start": "2019-03-14T06:00:00+00:00", "end": "2024-03-31T23:59:00+00:00"},
+            "error_code": None,
+            "error": None,
+        },
+    },
+    WebhookEventType.SYNC_DATA_TYPE_FAILED: {
+        "type": WebhookEventType.SYNC_DATA_TYPE_FAILED,
+        "data": {
+            "user_id": _USER_ID,
+            "provider": "apple",
+            "source": "sdk",
+            "scope": "historical",
+            "run_id": _RUN_ID,
+            "data_type": "sleep",
+            "native_data_type": "HKCategoryTypeIdentifierSleepAnalysis",
+            "kind": "event",
+            "status": "failed",
+            "items_reported": None,
+            "items_inserted": 0,
+            "items_updated": 0,
+            "written": None,
+            "coverage": None,
+            "error_code": "authorization_denied",
+            "error": "User has not granted access to sleep data",
+        },
+    },
+    # ------------------------------------------------------------------
     # Session events
     # ------------------------------------------------------------------
     WebhookEventType.WORKOUT_CREATED: {
@@ -114,6 +160,35 @@ EXAMPLE_PAYLOADS: dict[str, dict] = {
                 "rem_minutes": 95,
             },
             "is_nap": False,
+        },
+    },
+    WebhookEventType.MEAL_CREATED: {
+        "type": WebhookEventType.MEAL_CREATED,
+        "data": {
+            "id": _RECORD_ID,
+            "user_id": _USER_ID,
+            "title": "Grilled Chicken Breast",
+            "meal_type": "lunch",
+            "start_time": "2024-01-01T12:30:00+00:00",
+            "end_time": "2024-01-01T12:30:00+00:00",
+            "zone_offset": "+00:00",
+            "source": _SOURCE_APPLE,
+            "calories_kcal": 550.0,
+            "macros": {
+                "protein_g": 38.2,
+                "carbohydrates_g": 42.0,
+                "fat_g": 18.5,
+                "fiber_g": 4.0,
+            },
+            "water_ml": None,
+            "nutrients": {
+                "dietary_energy_consumed": {"value": 550.0, "unit": "kcal"},
+                "dietary_protein": {"value": 38.2, "unit": "g"},
+                "dietary_carbohydrates": {"value": 42.0, "unit": "g"},
+                "dietary_fat_total": {"value": 18.5, "unit": "g"},
+                "dietary_fiber": {"value": 4.0, "unit": "g"},
+                "dietary_sodium": {"value": 620.0, "unit": "mg"},
+            },
         },
     },
     # ------------------------------------------------------------------
@@ -304,6 +379,9 @@ EXAMPLE_PAYLOADS: dict[str, dict] = {
     ),
     WebhookEventType.SERIES_BASAL_ENERGY: _ts_payload(
         WebhookEventType.SERIES_BASAL_ENERGY, "basal_energy", "apple", "kcal", 1850.0
+    ),
+    WebhookEventType.SERIES_TOTAL_ENERGY: _ts_payload(
+        WebhookEventType.SERIES_TOTAL_ENERGY, "total_energy", "whoop", "kcal", 2150.0
     ),
     WebhookEventType.SERIES_ACTIVE_TIME: _ts_payload(
         WebhookEventType.SERIES_ACTIVE_TIME, "active_time", "garmin", "minutes", 312.0

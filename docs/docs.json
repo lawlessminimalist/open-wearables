@@ -77,6 +77,7 @@
             "group": "Mobile SDK",
             "pages": [
               "sdk/index",
+              "sdk/integration",
               {
                 "group": "iOS (Swift)",
                 "pages": [
@@ -152,7 +153,9 @@
             "group": "Configuration",
             "pages": [
               "dev-guides/aws-setup",
-              "dev-guides/raw-payload-storage"
+              "dev-guides/raw-payload-storage",
+              "dev-guides/log-export",
+              "dev-guides/telemetry"
             ]
           },
           {
@@ -207,6 +210,8 @@
               "POST /api/v1/users",
               "GET /api/v1/users/{user_id}",
               "PATCH /api/v1/users/{user_id}",
+              "GET /api/v1/users/{user_id}/personal-record",
+              "PUT /api/v1/users/{user_id}/personal-record",
               "DELETE /api/v1/users/{user_id}"
             ]
           },
@@ -237,6 +242,7 @@
             "group": "Summaries",
             "pages": [
               "GET /api/v1/users/{user_id}/summaries/activity",
+              "GET /api/v1/users/{user_id}/summaries/activity/totals",
               "GET /api/v1/users/{user_id}/summaries/sleep",
               "GET /api/v1/users/{user_id}/summaries/body",
               "GET /api/v1/users/{user_id}/summaries/recovery",
@@ -254,9 +260,13 @@
             "group": "Events",
             "pages": [
               "GET /api/v1/users/{user_id}/events/workouts",
+              "GET /api/v1/users/{user_id}/events/workouts/totals",
               "DELETE /api/v1/users/{user_id}/events/workouts/{workout_id}",
               "GET /api/v1/users/{user_id}/events/sleep",
-              "DELETE /api/v1/users/{user_id}/events/sleep/{sleep_id}"
+              "GET /api/v1/users/{user_id}/events/sleep/totals",
+              "DELETE /api/v1/users/{user_id}/events/sleep/{sleep_id}",
+              "GET /api/v1/users/{user_id}/events/meals",
+              "DELETE /api/v1/users/{user_id}/events/meals/{meal_id}"
             ]
           },
           {
