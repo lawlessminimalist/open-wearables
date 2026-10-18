@@ -32,7 +32,6 @@ from app.models import SeriesTypeDefinition
 from app.schemas.enums import SERIES_TYPE_DEFINITIONS
 from tests import factories
 
-
 _PROD_DB_NAMES = {"open-wearables", "open_wearables"}
 
 

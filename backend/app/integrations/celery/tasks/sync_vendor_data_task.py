@@ -23,8 +23,8 @@ from app.schemas.sync_status import (
 )
 from app.services.provider_settings_service import include_in_periodic_pull, live_sync_mode_of
 from app.services.providers.factory import ProviderFactory
-from app.services.sync_cancel_service import SyncCancelledError, clear_cancel, is_cancel_requested
 from app.services.providers.sync_247_result import Sync247TaskOutcome, error_code_of
+from app.services.sync_cancel_service import SyncCancelledError, clear_cancel, is_cancel_requested
 from app.services.sync_coordination import (
     bind_primary_lease,
     clear_primary_lease,

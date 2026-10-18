@@ -49,6 +49,11 @@ class TestSyncVendorDataTask:
         mock_strategy.capabilities.rest_pull = True
         mock_strategy.capabilities.webhook_stream = False
         mock_strategy.workouts = mock_workouts
+        # FORK DIVERGENCE: the fork only advances last_synced_at when no sub-sync
+        # failed (a failed 24/7 run must not skip its window). An auto-MagicMock
+        # data_247 returns a MagicMock that cannot be summarised, which fails the
+        # 24/7 run; this test is about the workouts path, so leave data_247 out.
+        mock_strategy.data_247 = None
         mock_get_provider.return_value = mock_strategy
 
         # Act

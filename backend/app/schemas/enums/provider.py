@@ -63,4 +63,9 @@ DEFAULT_PROVIDER_PRIORITY: dict[ProviderName, int] = {
     ProviderName.STRAVA: 12,
     ProviderName.ULTRAHUMAN: 13,
     ProviderName.WITHINGS: 14,
+    # FORK DIVERGENCE: the fork-only credential provider (garmin_connect/) needs a
+    # default too, or upstream's coverage test fails. Appended rather than slotted
+    # next to GARMIN so no upstream number moves; existing databases keep the
+    # priority rows they already have.
+    ProviderName.GARMIN_CONNECT: 15,
 }
