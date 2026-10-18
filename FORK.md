@@ -37,7 +37,7 @@ anything.** Installation is driven by three separate mechanisms:
 **Adding a flag without wiring it produces a patch that reports as enabled
 everywhere and never runs.** That has happened twice — see section 3.
 
-Current state (2026-09-20): 15 backend patches registered, 10 enabled, 5 retired, 6 standalone, 3 composed, 1 inline (plus 5 `structural` entries: celery-late-acks, ci-publish-images-upstream-only, celery-worker-signal-forwarding, historical-sync-chunking, frontend-display-timezone).
+Current state (2026-10-19): 15 backend patches registered, 10 enabled, 5 retired, 6 standalone, 3 composed, 1 inline (plus 4 active `structural` entries: celery-late-acks, ci-publish-images-upstream-only, historical-sync-chunking, garmin-connect-default-priority; celery-worker-signal-forwarding and frontend-display-timezone are retired).
 
 ### `replacement_kind` and why it matters
 
@@ -159,9 +159,13 @@ builds in two steps — upstream image, then the overlay — and pushes to
 `ghcr.io/<owner>/open-wearables-{platform,frontend}`. `scripts/build-push.sh` does
 the same locally for fast iteration.
 
-`VITE_API_URL` is **not** baked into the frontend image: `runtime-config.ts`
-resolves it at runtime from container env, so one image serves any environment.
-The deployment must set it, or the browser falls back to `http://localhost:8000`.
+`VITE_API_URL` is **not** baked into the frontend image. Since upstream 0.10.0
+the frontend is a SvelteKit server (adapter-node on bun) that reads it from the
+container env at runtime (`$env/dynamic/public`, `frontend/src/lib/server/api.ts`),
+so one image serves any environment. The deployment must set it (the address a
+browser or phone dials); `API_URL` optionally overrides the server's own hop to
+the backend (e.g. the in-cluster service). Without either the server falls back
+to `http://localhost:8000`.
 
 ---
 

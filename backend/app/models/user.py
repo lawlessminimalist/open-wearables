@@ -1,6 +1,7 @@
 from uuid import UUID
 
-from sqlalchemy.orm import Mapped, relationship
+from sqlalchemy import Index, text
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import BaseDbModel
 from app.mappings import PrimaryKey, Unique, email, str_50, str_100, str_255
@@ -8,6 +9,8 @@ from app.mappings import PrimaryKey, Unique, email, str_50, str_100, str_255
 
 class User(BaseDbModel):
     """Data owner model"""
+
+    __table_args__ = (Index("ix_user_is_seed", "id", postgresql_where=text("is_seed")),)
 
     id: Mapped[PrimaryKey[UUID]]
 
@@ -20,6 +23,9 @@ class User(BaseDbModel):
     # IANA timezone name (e.g. "Australia/Brisbane"). Used to render local
     # datetimes alongside UTC values in API responses.
     timezone: Mapped[str_50 | None]
+
+    # Synthetic user created by the seed data generator
+    is_seed: Mapped[bool] = mapped_column(default=False, server_default=text("false"))
 
     personal_record: Mapped["PersonalRecord | None"] = relationship(
         back_populates="user",

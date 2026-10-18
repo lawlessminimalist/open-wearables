@@ -271,7 +271,9 @@ class TestLoadAndSaveAllAborts:
         )
 
         assert counters["calls"] == 3 * 5
-        assert results["sleep"] == 3
+        # load_and_save_all returns Sync247Result since upstream #1501.
+        assert results.outcomes["sleep"].rows_written == 3
+        assert not results.failures
 
     def test_ordinary_per_day_error_is_still_swallowed(self, patch_module: Any, no_redis: None) -> None:
         """A single bad day must not abort the run — unchanged from upstream."""
@@ -292,7 +294,8 @@ class TestLoadAndSaveAllAborts:
             end_time=datetime(2026, 8, 3, tzinfo=timezone.utc),
         )
 
-        assert results["stress"] == 2, "two good days should still persist"
+        assert results.outcomes["stress"].rows_written == 2, "two good days should still persist"
+        assert "stress" not in results.failures, "a swallowed per-day error is not recorded as a failure"
 
     def test_cooldown_short_circuits_the_run(self, patch_module: Any, monkeypatch: pytest.MonkeyPatch) -> None:
         from app.services.providers.garmin_connect.client import GarminConnectRateLimitError

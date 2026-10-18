@@ -31,12 +31,14 @@ from .health_score import (
     HealthScoreUpdate,
     ScoreComponent,
 )
+from .meal import MealDetailCreate
 from .menstrual_cycle import MenstrualCycleDetailCreate
 from .personal_record import (
     PersonalRecordBase,
     PersonalRecordCreate,
     PersonalRecordResponse,
     PersonalRecordUpdate,
+    sex_to_db,
 )
 from .sleep import SleepStage
 
@@ -68,8 +70,11 @@ __all__ = [
     "PersonalRecordCreate",
     "PersonalRecordUpdate",
     "PersonalRecordResponse",
+    "sex_to_db",
     # MenstrualCycle
     "MenstrualCycleDetailCreate",
+    # Meal
+    "MealDetailCreate",
     # Sleep
     "SleepStage",
     # HealthScore

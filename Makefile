@@ -2,6 +2,8 @@ DOCKER_COMMAND = docker compose -f docker-compose.yml
 DOCKER_EXEC = $(DOCKER_COMMAND) exec app
 ALEMBIC_CMD = uv run alembic
 
+FRONTEND_RUN = cd frontend && bun run
+
 help:	## Show this help.
 	@echo "============================================================"
 	@echo "This is a list of available commands for this project."
@@ -34,7 +36,7 @@ migrate:  ## Apply all migrations
 	$(DOCKER_EXEC) $(ALEMBIC_CMD) upgrade head
 
 seed:  ## Seed sample data (test users and activity data)
-	$(DOCKER_EXEC) uv sync --group dev
+	$(DOCKER_EXEC) uv sync --inexact --group dev --extra otel
 	$(DOCKER_EXEC) uv run python scripts/init/seed_activity_data.py
 
 create_migration:  ## Create a new migration. Use 'make create_migration m="Description of the change"'
@@ -69,3 +71,27 @@ patch-show:  ## Print one registry entry: make patch-show ID=fix-pace-null (no f
 
 patch-list:  ## One line per patch: id, status, kind, file
 	python3 ow-patches/check_upstream.py --list
+
+frontend_install:  ## Install frontend dependencies
+	cd frontend && bun install --frozen-lockfile
+
+frontend_check:  ## Type-check the frontend
+	$(FRONTEND_RUN) check
+
+frontend_lint:  ## Lint the frontend
+	$(FRONTEND_RUN) lint
+
+frontend_format:  ## Auto-format the frontend
+	$(FRONTEND_RUN) format
+
+frontend_format_check:  ## Check frontend formatting without writing
+	$(FRONTEND_RUN) format:check
+
+frontend_test:  ## Run frontend unit and component tests
+	$(FRONTEND_RUN) test:unit --run
+
+frontend_test_e2e:  ## Run frontend end-to-end tests (downloads browsers on first run)
+	$(FRONTEND_RUN) test:e2e
+
+frontend_verify:  ## Run everything CI runs for the frontend
+	$(MAKE) frontend_check frontend_lint frontend_format_check frontend_test frontend_test_e2e

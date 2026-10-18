@@ -88,3 +88,7 @@ next reconcile archives them here.
 ## fix-provider-prefix-shadowing
 
 - audit_note:                2026-09-13 vs 53de57ca — KEEP. Upstream 02deb366 only added `WITHINGS = "withings"`; from_source_string is still declaration-order first-substring. "withings" is neither prefix nor superstring of another value, so the longest-first patch handles it unchanged. test_provider_name.py FORK DIVERGENCE case intact; no new upstream cases.
+
+## fix-activity-summary-utc-bucketing
+
+- audit_note: 2026-09-20 vs upstream 4aa4dbf5 (0.9.0) — KEEP AS-IS. check_upstream.py flagged get_daily_activity_aggregates as changed; the ast-extracted upstream diff since 53de57ca is one line, `SeriesType.energy` -> `SeriesType.active_energy` (b6c0e2b2, #1643), which was re-applied to the patch in the same reconcile. get_daily_active_minutes and get_daily_intensity_minutes are hash-identical. Patch vs upstream now differs only by the local_date coalesce + `_resolve_user_timezone` and docstring indentation. retire_when not met: upstream still buckets by `coalesce(zone_offset, +00:00)`.

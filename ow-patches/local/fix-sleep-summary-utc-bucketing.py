@@ -53,7 +53,14 @@ particular they preserve upstream's:
     avg_resp / avg_spo2, averaged over each row's [min_start_time, max_end_time)
     window),
   * #1257 provider grouping + per-session `sessions` breakdown attached via
-    ``self._get_sleep_sessions``.
+    ``self._get_sleep_sessions``,
+  * #1845 paging by night: the required ``provider_order`` / ``device_type_order``
+    arguments, the ``source_rank`` row_number() window (partitioned by
+    ``local_sleep_date``, so it inherits the fork's bucketing) and the
+    ``source_rank == 1`` filter applied before the cursor/limit.
+
+Rebased 2026-10-19 onto upstream d18304f8; the previous copy lacked #1845's two
+positional arguments, so SummariesService's 8-argument call raised TypeError.
 
 Both ``get_sleep_summaries`` AND ``_get_sleep_sessions`` are replaced with the
 identical `local_sleep_date` fallback, so the summary key (user-tz date) and the
@@ -89,7 +96,8 @@ from sqlalchemy import (
 
 from app.database import DbSession
 from app.models import DataPointSeries, DataSource, EventRecord, SleepDetails
-from app.schemas.enums import SeriesType, get_series_type_id
+from app.repositories.repositories import source_priority_order
+from app.schemas.enums import DeviceType, ProviderName, SeriesType, get_series_type_id
 from app.utils.pagination import decode_cursor
 
 
@@ -109,8 +117,13 @@ def get_sleep_summaries(
     end_date: datetime,
     cursor: str | None,
     limit: int,
+    provider_order: dict[ProviderName, int],
+    device_type_order: dict[DeviceType, int],
 ) -> list[dict]:
-    """Get daily sleep summaries aggregated by date, source, and device_model.
+    """Get daily sleep summaries: per date, the aggregate of its highest-priority source.
+
+    The source is picked before pagination, so a page holds `limit` dates however many
+    sources recorded each night.
 
     Returns list of dicts with keys:
     - sleep_date, min_start_time, max_end_time, total_duration_minutes
@@ -174,8 +187,19 @@ def get_sleep_summaries(
             DataSource.provider,
             DataSource.source,
             DataSource.device_model,
+            # Functionally dependent on the three columns above (uq_data_source_identity),
+            # so grouping by it as well cannot change the number of groups.
             DataSource.device_type,
             func.min(cast(EventRecord.id, String)).label("record_id_text"),
+            func.row_number()
+            .over(
+                partition_by=local_sleep_date,
+                order_by=(
+                    *source_priority_order(provider_order, device_type_order),
+                    func.min(cast(EventRecord.id, String)),
+                ),
+            )
+            .label("source_rank"),
             # Sleep details aggregations - main sleep only (minutes stored, convert to seconds later)
             func.sum(case((is_main_sleep, SleepDetails.sleep_time_in_bed_minutes), else_=None)).label(
                 "time_in_bed_minutes"
@@ -288,6 +312,7 @@ def get_sleep_summaries(
         physio_lateral.c.avg_resp,
         physio_lateral.c.avg_spo2,
     ).outerjoin(physio_lateral, true())
+    query = query.filter(subquery.c.source_rank == 1)
 
     # Handle cursor pagination
     if cursor:

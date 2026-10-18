@@ -64,7 +64,7 @@ _IDENTITY_CONSTRUCTORS = frozenset({"TimeSeriesSampleCreate", "EventRecordCreate
 # Files that make up the *effective* persist path for a provider.
 #
 # For ultrahuman the upstream module is deliberately NOT listed: its own
-# `_build_activity_samples` / `load_and_save_all` bodies still omit `source=`
+# `_build_activity_samples` / `_save_daily_activity` bodies still omit `source=`
 # (that is the bug fix-hrv-source-unknown and fix-spo2-respiratory-missing exist
 # to correct), and they are replaced at import time by apply.py. Scanning
 # upstream's file would assert against dead code. Scan the patches instead.

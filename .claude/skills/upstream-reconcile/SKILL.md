@@ -38,7 +38,7 @@ git merge upstream/main --no-edit
 
 Expect conflicts. Resolve them, then `git add` each file; a file stays listed as unmerged until staged even with no markers left. Read the conflict hunks with `grep -n '^<<<<<<<' <file>` and `sed -n` around them rather than the whole file.
 
-For the lockfiles, take upstream's copy and re-pin the fork-only dependencies rather than hand-merging: `git checkout --theirs -- backend/uv.lock && cd backend && uv lock -P garminconnect==<version production runs>`. The frontend lockfile usually merges cleanly; `pnpm install --frozen-lockfile` in Phase 5 tells you if it did not.
+For the lockfiles, take upstream's copy and re-pin the fork-only dependencies rather than hand-merging: `git checkout --theirs -- backend/uv.lock && cd backend && uv lock -P garminconnect==<version production runs>`. The frontend lockfile (`frontend/bun.lock`) has no fork-only dependencies now; take upstream's, and `bun install --frozen-lockfile` in Phase 5 tells you if it did not.
 
 Commit the merge, then immediately run the two cheap checks that catch what the merge tool cannot, before spending anything on audits:
 
@@ -78,12 +78,12 @@ cd backend
 uv run ruff check && uv run ruff format --check && uv run ty check
 uv run pytest -q
 cd ../frontend
-npx --yes pnpm@10.13.1 install --frozen-lockfile
-npx --yes pnpm@10.13.1 run lint && npx --yes pnpm@10.13.1 run build
-npx --yes prettier@3.9.4 --check "src/**/*.{ts,tsx,js,jsx,json,css,md}"
+bun install --frozen-lockfile        # bun 1.4.x, the version CI pins; 1.3 rejects the lockfile
+bun run check && bun run lint && bun run format:check && bun run build
+bun run test:unit --run --project server
 ```
 
-Use the pinned tool versions; the committed `node_modules` can resolve a different prettier than the pin and the two disagree about which files need formatting. Run the test suite in the foreground or with the `cd` inside the background command, and never pipe it through `tail`; a background run started from the wrong directory once failed to spawn pytest and the pipe reported success. Read the summary line.
+Since upstream 0.10.0 the frontend is SvelteKit on bun (`frontend/bun.lock`); the React/pnpm toolchain is gone. If the local bun is older than CI's, `npx --yes -p bun@1.4.0` provides the pinned one. Run the test suite in the foreground or with the `cd` inside the background command, and never pipe it through `tail`; a background run started from the wrong directory once failed to spawn pytest and the pipe reported success. Read the summary line.
 
 Regenerate the committed OpenAPI spec, which upstream's CI checks for freshness and which always differs on the fork because of the credential-provider endpoint: `cd backend && SECRET_KEY=x uv run python scripts/export_openapi.py`, then commit `docs/openapi.json`.
 

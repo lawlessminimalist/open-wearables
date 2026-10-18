@@ -26,6 +26,7 @@ from app.services.providers.garmin_connect.client import (
     GarminConnectClientError,
     GarminConnectRateLimitError,
 )
+from app.services.providers.sync_247_result import Sync247Result
 from app.services.providers.templates.base_247_data import Base247DataTemplate
 from app.services.timeseries_service import timeseries_service
 from app.utils.structured_logging import log_structured
@@ -721,7 +722,7 @@ class GarminConnect247Data(Base247DataTemplate):
         start_time: datetime | str | None = None,
         end_time: datetime | str | None = None,
         is_first_sync: bool = False,
-    ) -> dict[str, int]:
+    ) -> Sync247Result:
         """Load and save all 24/7 data types for the given date range.
 
         Aborts the whole run on the first ``GarminConnectClientError`` instead of
@@ -761,14 +762,10 @@ class GarminConnect247Data(Base247DataTemplate):
         start_date = start_time.date()
         end_date = end_time.date()
 
-        results: dict[str, int] = {
-            "sleep": 0,
-            "heart_rate": 0,
-            "daily_stats": 0,
-            "stress": 0,
-            "hrv": 0,
-            "vo2_max": 0,
-        }
+        # Upstream #1501: every provider reports through Sync247Result. Per-day errors
+        # are still swallowed (logged, not recorded as a failure) exactly as before, so a
+        # day with no stress data does not turn the whole run partial.
+        results = Sync247Result(provider=self.provider_name)
 
         per_day_tasks: dict[str, Callable[[date], int]] = {
             "sleep": lambda d: self.save_sleep_for_date(db, user_id, d),
@@ -785,7 +782,7 @@ class GarminConnect247Data(Base247DataTemplate):
                 break
             for data_type, fn in per_day_tasks.items():
                 try:
-                    results[data_type] += fn(cdate)
+                    results.add(data_type, fn(cdate))
                 except GarminConnectClientError as exc:
                     fatal_exc = exc
                     rate_limited = isinstance(exc, GarminConnectRateLimitError)
@@ -800,7 +797,7 @@ class GarminConnect247Data(Base247DataTemplate):
                         data_type=data_type,
                         date=str(cdate),
                         error=str(exc),
-                        partial_results=dict(results),
+                        partial_results=repr(results),
                         user_id=str(user_id),
                     )
                     break
@@ -823,12 +820,11 @@ class GarminConnect247Data(Base247DataTemplate):
 
         # Body composition fetched once for the full range
         try:
-            results["body_composition"] = self.save_body_composition(db, user_id, start_date, end_date)
+            results.record("body_composition", self.save_body_composition(db, user_id, start_date, end_date))
         except GarminConnectClientError:
-            results["body_composition"] = 0
             raise
         except Exception as exc:
-            results["body_composition"] = 0
+            results.fail("body_composition", exc)
             log_structured(
                 self.logger,
                 "error",
@@ -840,12 +836,11 @@ class GarminConnect247Data(Base247DataTemplate):
 
         # VO2max likewise fetched once, not per-day — see save_vo2max_for_range.
         try:
-            results["vo2_max"] = self.save_vo2max_for_range(db, user_id, end_date)
+            results.record("vo2_max", self.save_vo2max_for_range(db, user_id, end_date))
         except GarminConnectClientError:
-            results["vo2_max"] = 0
             raise
         except Exception as exc:
-            results["vo2_max"] = 0
+            results.fail("vo2_max", exc)
             log_structured(
                 self.logger,
                 "error",

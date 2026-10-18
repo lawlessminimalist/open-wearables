@@ -60,11 +60,19 @@ verbatim:
     including the ``is_daily_total.isnot(True)`` filter in active-minutes (#1232).
   * ``active_time`` aggregation returned as ``active_time_minutes`` and
     ``DataSource.provider`` added to the SELECT / GROUP BY / result dict (#1242).
+  * ``total_energy`` aggregated as ``total_energy_sum``, and steps/active/basal
+    returned as ``None`` (not 0) when absent (#1801).
+  * the ``self._local_day_window`` filter (a28f5314): a two-sided ``recorded_at``
+    bound around the local-date window. Its +/-1 day margin covers every IANA
+    offset, so it stays valid for user-timezone bucketing.
+
+Rebased 2026-10-19 onto upstream d18304f8: the three bodies are upstream's
+verbatim except for the ``local_date`` expression.
 """
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import ColumnElement, Date, Interval, and_, asc, case, cast, func, literal_column
@@ -105,14 +113,15 @@ def get_daily_activity_aggregates(
 
     Returns list of dicts with keys:
     - activity_date, provider, source, device_model, device_type
-    - steps_sum, active_energy_sum, basal_energy_sum
+    - steps_sum, active_energy_sum, basal_energy_sum, total_energy_sum
     - hr_avg, hr_max, hr_min
-    - distance_sum, flights_climbed_sum, active_time_minutes
+    - distance_sum, flights_climbed_sum
     """
     # Series type IDs we need
     steps_id = get_series_type_id(SeriesType.steps)
     energy_id = get_series_type_id(SeriesType.active_energy)
     basal_energy_id = get_series_type_id(SeriesType.basal_energy)
+    total_energy_id = get_series_type_id(SeriesType.total_energy)
     hr_id = get_series_type_id(SeriesType.heart_rate)
     distance_id = get_series_type_id(SeriesType.distance_walking_running)
     flights_id = get_series_type_id(SeriesType.flights_climbed)
@@ -164,9 +173,8 @@ def get_daily_activity_aggregates(
             DataSource.source.label("source"),
             DataSource.device_model.label("device_model"),
             # device_type is functionally dependent on the three columns above
-            # (uq_data_source_identity is unique per user on
-            # provider/device_model/source), so adding it to the GROUP BY cannot
-            # change the number of groups. Added upstream in #1414.
+            # (uq_data_source_identity is unique per user on provider/device_model/source),
+            # so adding it to the GROUP BY cannot change the number of groups.
             DataSource.device_type.label("device_type"),
             # Steps - prefer daily total, else sum samples
             prefer_daily_sum(steps_id).label("steps_sum"),
@@ -174,6 +182,8 @@ def get_daily_activity_aggregates(
             prefer_daily_sum(energy_id).label("active_energy_sum"),
             # Basal energy - prefer daily total, else sum samples
             prefer_daily_sum(basal_energy_id).label("basal_energy_sum"),
+            # Total energy - providers that report active + basal without a split
+            prefer_daily_sum(total_energy_id).label("total_energy_sum"),
             # Heart rate stats
             func.avg(case((self.model.series_type_definition_id == hr_id, self.model.value), else_=None)).label(
                 "hr_avg"
@@ -194,11 +204,18 @@ def get_daily_activity_aggregates(
         .join(DataSource, self.model.data_source_id == DataSource.id)
         .filter(
             DataSource.user_id == user_id,
-            self.model.recorded_at >= start_date - timedelta(days=1),
-            local_date >= cast(start_date, Date),
-            local_date < cast(end_date, Date),
+            *self._local_day_window(local_date, start_date, end_date),
             self.model.series_type_definition_id.in_(
-                [steps_id, energy_id, basal_energy_id, hr_id, distance_id, flights_id, active_time_id]
+                [
+                    steps_id,
+                    energy_id,
+                    basal_energy_id,
+                    total_energy_id,
+                    hr_id,
+                    distance_id,
+                    flights_id,
+                    active_time_id,
+                ]
             ),
         )
         .group_by(
@@ -222,16 +239,15 @@ def get_daily_activity_aggregates(
                 "source": row.source,
                 "device_model": row.device_model,
                 "device_type": row.device_type,
-                "steps_sum": int(row.steps_sum) if row.steps_sum else 0,
-                "active_energy_sum": float(row.active_energy_sum) if row.active_energy_sum else 0.0,
-                "basal_energy_sum": float(row.basal_energy_sum) if row.basal_energy_sum else 0.0,
+                "steps_sum": int(row.steps_sum) if row.steps_sum is not None else None,
+                "active_energy_sum": float(row.active_energy_sum) if row.active_energy_sum is not None else None,
+                "basal_energy_sum": float(row.basal_energy_sum) if row.basal_energy_sum is not None else None,
+                "total_energy_sum": float(row.total_energy_sum) if row.total_energy_sum is not None else None,
                 "hr_avg": int(round(float(row.hr_avg))) if row.hr_avg is not None else None,
                 "hr_max": int(row.hr_max) if row.hr_max is not None else None,
                 "hr_min": int(row.hr_min) if row.hr_min is not None else None,
                 "distance_sum": float(row.distance_sum) if row.distance_sum is not None else None,
-                "flights_climbed_sum": int(row.flights_climbed_sum)
-                if row.flights_climbed_sum is not None
-                else None,
+                "flights_climbed_sum": int(row.flights_climbed_sum) if row.flights_climbed_sum is not None else None,
                 "active_time_minutes": int(row.active_time_sum) if row.active_time_sum is not None else None,
             }
         )
@@ -295,9 +311,7 @@ def get_daily_active_minutes(
         .join(DataSource, self.model.data_source_id == DataSource.id)
         .filter(
             DataSource.user_id == user_id,
-            self.model.recorded_at >= start_date - timedelta(days=1),
-            local_date >= cast(start_date, Date),
-            local_date < cast(end_date, Date),
+            *self._local_day_window(local_date, start_date, end_date),
             self.model.series_type_definition_id == steps_id,
             self.model.is_daily_total.isnot(True),
         )
@@ -317,9 +331,7 @@ def get_daily_active_minutes(
             minute_bucket.c.source,
             minute_bucket.c.device_model,
             # Count minutes where steps >= threshold (active)
-            func.sum(case((minute_bucket.c.steps_in_minute >= active_threshold, 1), else_=0)).label(
-                "active_minutes"
-            ),
+            func.sum(case((minute_bucket.c.steps_in_minute >= active_threshold, 1), else_=0)).label("active_minutes"),
             # Count all tracked minutes
             func.count(minute_bucket.c.minute_bucket).label("tracked_minutes"),
         )
@@ -412,9 +424,7 @@ def get_daily_intensity_minutes(
         .join(DataSource, self.model.data_source_id == DataSource.id)
         .filter(
             DataSource.user_id == user_id,
-            self.model.recorded_at >= start_date - timedelta(days=1),
-            local_date >= cast(start_date, Date),
-            local_date < cast(end_date, Date),
+            *self._local_day_window(local_date, start_date, end_date),
             self.model.series_type_definition_id == hr_id,
         )
         .group_by(

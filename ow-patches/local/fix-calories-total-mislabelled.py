@@ -22,14 +22,15 @@ Three coordinated changes, rebased onto upstream after the 2026-07 merge:
      so the post-#1232 aggregator de-duplicates correctly.
 
   3. SummariesService.get_activity_summaries — DECORATOR (composed in apply.py):
-     post-process each summary so total_calories_kcal is null unless BOTH active
-     and basal are present, and basal_calories_kcal is surfaced. We no longer
+     post-process each summary so basal_calories_kcal is surfaced. (Until
+     2026-10-19 it also nulled total_calories_kcal unless BOTH active and basal
+     were present; upstream #1801 does that itself now.) We no longer
      wholesale-replace the method (that shadowed #1242's active_time_minutes) —
      we reconstruct basal = total - active from upstream's own output.
 
 The basal_calories_kcal / timezone fields on ActivitySummary are added to the
 schema in source (structural). When this patch is disabled, upstream's behaviour
-returns (total = active + (basal or 0); basal_calories_kcal stays null).
+returns (total per upstream #1801; basal_calories_kcal stays null).
 """
 
 
@@ -41,31 +42,25 @@ from app.schemas.responses.activity import ActivitySummary
 
 
 def apply_calories_fix(summary: ActivitySummary) -> None:
-    """Rewrite one upstream ActivitySummary to honest calorie fields, in place.
+    """Surface basal_calories_kcal on one upstream ActivitySummary, in place.
 
-    Upstream sets `active_calories_kcal = active_energy_sum` and
-    `total_calories_kcal = (active or 0) + (basal or 0)`, and never populates
-    `basal_calories_kcal`. From that output we recover
-    `basal = total - active`, treat 0 as missing (a real day's BMR is never 0),
-    surface `basal_calories_kcal`, and null out `total_calories_kcal` unless
-    BOTH energies are present — so the field name (active + basal) stays honest
-    instead of silently meaning active-only.
+    Since upstream #1801 (c53a1ac2, 0.10.0), get_activity_summaries already
+    reports total_calories_kcal honestly: the provider's own total when it has
+    one, else active + basal when both are present, else null. The half of this
+    patch that nulled an active-only total is therefore upstream behaviour now
+    and was dropped on 2026-10-19; recomputing total here would also null a real
+    provider-reported total (Whoop's cycle energy) whenever active is missing.
 
-    This is a pure function of upstream's response, so it inherits any upstream
-    change to get_activity_summaries (e.g. #1242 active_time_minutes) rather
-    than shadowing it.
+    What upstream still never does is populate the fork-only
+    basal_calories_kcal field, so recover it from upstream's own output as
+    total - active when both are present. 0 or less is treated as missing (a
+    real day's BMR is never 0). Pure function of upstream's response, so it
+    inherits any upstream change to get_activity_summaries.
     """
     active = summary.active_calories_kcal
     total = summary.total_calories_kcal
-    basal = None if total is None else (total - (active or 0.0))
-
-    active = active if active else None
-    basal = basal if basal else None
-    total = (active + basal) if (active is not None and basal is not None) else None
-
-    summary.active_calories_kcal = active
-    summary.basal_calories_kcal = basal
-    summary.total_calories_kcal = total
+    basal = (total - active) if (active is not None and total is not None) else None
+    summary.basal_calories_kcal = basal if basal is not None and basal > 0 else None
 
 
 def install() -> None:
