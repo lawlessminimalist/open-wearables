@@ -1,19 +1,19 @@
 {
-  "_upstream_sha": "6c2f28a32b0f9985ef1d3735df3cda2f61cb143c",
+  "_upstream_sha": "d18304f8076a7710c48a4b279f8e8abd5a16887e",
   "fix-activity-summary-utc-bucketing": {
     "DataPointSeriesRepository.get_daily_active_minutes": {
       "file": "backend/app/repositories/data_point_series_repository.py",
-      "hash": "d91e10856ab75f88",
+      "hash": "eaaaa14a509129bc",
       "kind": "body"
     },
     "DataPointSeriesRepository.get_daily_activity_aggregates": {
       "file": "backend/app/repositories/data_point_series_repository.py",
-      "hash": "8855259e18b34608",
+      "hash": "f2bf6a44ad8749ed",
       "kind": "body"
     },
     "DataPointSeriesRepository.get_daily_intensity_minutes": {
       "file": "backend/app/repositories/data_point_series_repository.py",
-      "hash": "4c602bab9d494e01",
+      "hash": "50567061d4a75c14",
       "kind": "body"
     }
   },
@@ -58,7 +58,7 @@
     },
     "EventRecordRepository.get_sleep_summaries": {
       "file": "backend/app/repositories/event_record_repository.py",
-      "hash": "46fb872d09620105",
+      "hash": "74ff3c8333745236",
       "kind": "body"
     }
   },
@@ -70,9 +70,9 @@
     }
   },
   "fix-spo2-respiratory-missing": {
-    "Ultrahuman247Data.load_and_save_all": {
+    "Ultrahuman247Data._save_daily_activity": {
       "file": "backend/app/services/providers/ultrahuman/data_247.py",
-      "hash": "f0d9f69a6d1024c3",
+      "hash": "57d88e7706e30a84",
       "kind": "body"
     },
     "Ultrahuman247Data.normalize_activity_samples": {
