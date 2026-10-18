@@ -38,11 +38,10 @@ PF_PORT=30500                              # local port the forward binds
 REG="host.containers.internal:${PF_PORT}"  # how the podman VM reaches the forward
 PLATFORM=linux/amd64
 
-# Build-time API URL. NOTE: this is only a fallback now — the frontend resolves
-# VITE_API_URL at RUNTIME from the container env via window.__APP_CONFIG__ (see
-# frontend/src/lib/api/runtime-config.ts), which is why CI can publish one generic
-# image. Kept here so a locally-built image works even if the deployment env var
-# is missing. Override via env if the tunnel hostname changes.
+# Build-time API URL. NOTE: the SvelteKit frontend (upstream 0.10.0) reads
+# VITE_API_URL at RUNTIME from the container env (frontend/src/lib/server/api.ts)
+# and its Dockerfile declares no build arg, so this is ignored by the build and kept
+# only for the older image layout. The deployment env var is what matters.
 VITE_API_URL="${VITE_API_URL:-https://api-wearables.homelab-dhlaw.uk}"
 
 BACKEND_DEPLOYS="deploy/app deploy/celery-beat deploy/celery-worker"

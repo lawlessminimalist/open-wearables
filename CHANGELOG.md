@@ -2,6 +2,14 @@
 
 Dated entries, newest first, describing what moved and why so the next session can read this before exploring. Upstream has no CHANGELOG.md, so this file is fork-owned and never conflicts. Entries stay short; the reasoning lives in the linked files.
 
+## 2026-10-19
+
+The reconcile onto upstream 0.10.0 (6c2f28a3..d18304f8, 171 commits) landed on `reconcile/upstream-2026-10-19`. Upstream replaced the React dashboard with a SvelteKit portal served by bun (cookie sessions, no Redis), normalised every provider's 24/7 sync result into `Sync247Result` (#1501), moved Celery task names and queues into `CeleryTask` / `CeleryQueue` (#1851), added stable data-source identity with a duplicate-source merge (#1781), nutrition data, anonymous telemetry (on by default), SMTP invitations, OTLP log export, an extensions mechanism, and a run of startup data migrations, several of which relabel Ultrahuman series.
+
+Thirty files conflicted. Every fork React file was deleted upstream, so the frontend was taken wholesale and `frontend-display-timezone` retired with an accepted regression recorded in `TODO.md` (no display-timezone, no `User.timezone` form field and no credential-provider connect UI until ported to Svelte). `celery-worker-signal-forwarding` retired: upstream #1771 forwards SIGTERM itself. The fork's garmin_connect `load_and_save_all` was converted to `Sync247Result`, the sync task's cursor guard was moved to read the new summary status (it would otherwise have advanced past a failed 24/7 run), and the OAuth refresh path honours upstream's new `revoke_on_failure` while keeping the fork's transient-failure handling. Merge migration `8f7f993001f6` joins the fork head `f3a9c1d2e4b5` with upstream's `c4e7a1d93b52`.
+
+The symbol-level drift check flagged three patches and all three were broken or stale: `fix-spo2-respiratory-missing` returned a dict from a method that must now return `Sync247Result` (every Ultrahuman sync would have failed), `fix-sleep-summary-utc-bucketing` would have raised TypeError on every sleep-summary request against #1845's new signature, and `fix-activity-summary-utc-bucketing` dropped #1801's provider totals. All three were rebased, each with a test that fails against the stale copy, and `fix-calories-total-mislabelled` was narrowed because #1801 now reports an honest total.
+
 ## 2026-09-22
 
 The reconcile onto upstream 4aa4dbf5..6c2f28a3 landed on `reconcile/upstream-2026-09-22`, a single upstream commit adding a HEAD probe to the Withings OAuth callback URL. It touched only `oauth.py`, its tests and the OpenAPI spec, none of which any registered patch covers, so the drift checker reported zero changed symbols and the merge needed no conflict resolution and no shadow audit. `ty`, the migration guard, ruff, the full backend suite, the frontend lint/build/prettier chain and the patch install loop all passed; the regenerated `docs/openapi.json` matched the merge exactly.

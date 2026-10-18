@@ -16,9 +16,9 @@ name: Publish to GHCR
 #   ghcr.io/<owner>/open-wearables-platform    <- backend, used by app + celery
 #   ghcr.io/<owner>/open-wearables-frontend
 #
-# VITE_API_URL is deliberately NOT baked in. The frontend resolves it at runtime
-# from the container's env via window.__APP_CONFIG__ (see
-# frontend/src/lib/api/runtime-config.ts), so one image serves every environment.
+# VITE_API_URL is deliberately NOT baked in. The SvelteKit frontend reads it from
+# the container's env at runtime (see frontend/src/lib/server/api.ts), so one
+# image serves every environment.
 #
 # Triggers:
 #   push to main            -> :latest, :main, :sha-<short>
