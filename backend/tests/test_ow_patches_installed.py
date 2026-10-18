@@ -52,6 +52,11 @@ _EXPECTED_PATCHED: list[tuple[str, str, str]] = [
         "Ultrahuman247Data.normalize_activity_samples",
         "fix-spo2-respiratory-missing",
     ),
+    (
+        "app.services.providers.ultrahuman.data_247",
+        "Ultrahuman247Data._save_daily_activity",
+        "fix-spo2-respiratory-missing (retargeted from load_and_save_all 2026-10-19, upstream #1501)",
+    ),
     # --- garmin_connect (fork-only provider) ---
     # NOTE: save_daily_stats_for_date is deliberately NOT in this list. It used
     # to be replaced by fix-calories-total-mislabelled, but that override was

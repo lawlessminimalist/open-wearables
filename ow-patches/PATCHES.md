@@ -133,12 +133,11 @@ kubectl -n open-wearables exec deploy/app -- ls /root_project/ow-patches/apply.p
 - upstream_url:              https://github.com/the-momentum/open-wearables
 - upstream_issue_or_pr:      null
 - file:                      backend/app/services/summaries_service.py
-- structural_files:          backend/app/services/providers/garmin/coverage.py
 - symbol:                    SummariesService.get_activity_summaries (decorated)
-- what_we_changed:           Persist `bmrKilocalories` as SeriesType.basal_energy from both Garmin providers, surface it on ActivitySummary as basal_calories_kcal, and stop computing total_calories_kcal as `active + 0` when basal is missing — return null so the field name is honest (active+basal, not active-only).
-- retire_when:               Garmin daily-stats normalization persists basal energy AND ActivitySummary.total_calories_kcal is null when basal is missing (not equal to active_calories_kcal) AND ActivitySummary.basal_calories_kcal is populated.
+- what_we_changed:           Surface basal energy on ActivitySummary as the fork-only `basal_calories_kcal` field, recovered from upstream's own output as total - active. (Originally also persisted Garmin `bmrKilocalories` and nulled an active-only total; both are upstream since #1801.)
+- retire_when:               ActivitySummary carries a basal energy field upstream (any `basal_calories_kcal` or equivalent on the response schema).
 - upstream_equivalent_check: basal_calories_kcal
-- audit_note_2: 2026-09-20 — KEEP. The structural half in garmin/coverage.py conflicted with b6c0e2b2 (energy -> active_energy rename); resolved by taking upstream's `("active_calories", SeriesType.active_energy)` and keeping the fork's `("bmr_calories", SeriesType.basal_energy)` line. get_activity_summaries hash unchanged.
+- rebased_note: 2026-10-19 vs upstream d18304f8 (0.10.0) — REBASED, narrowed. Upstream #1801 (c53a1ac2) now (a) maps `("bmr_calories", SeriesType.basal_energy)` in garmin/coverage.py itself, so the fork's structural line there is gone (took upstream's file) and `structural_files` dropped, and (b) reports total_calories_kcal as the provider's total, else active + basal when both exist, else null, which is the honesty fix this patch existed for. `apply_calories_fix` no longer touches total_calories_kcal: recomputing it would null a real provider-reported total (Whoop cycle energy, relabelled active->total by upstream) whenever active is missing. It now only sets basal_calories_kcal = total - active when both are present and positive.
 - local_patch_file:          ow-patches/local/fix-calories-total-mislabelled.py
 
 ---
@@ -150,10 +149,11 @@ kubectl -n open-wearables exec deploy/app -- ls /root_project/ow-patches/apply.p
 - upstream_url:              https://github.com/the-momentum/open-wearables
 - upstream_issue_or_pr:      null
 - file:                      backend/app/services/providers/ultrahuman/data_247.py, backend/app/services/providers/ultrahuman/coverage.py
-- symbol:                    Ultrahuman247Data.normalize_activity_samples + Ultrahuman247Data.load_and_save_all + ACTIVITY_SAMPLE_SERIES (coverage, structural)
+- symbol:                    Ultrahuman247Data.normalize_activity_samples + Ultrahuman247Data._save_daily_activity + ACTIVITY_SAMPLE_SERIES (coverage, structural)
 - what_we_changed:           Map Ultrahuman intraday SpO2 (spo2/oxygen_saturation/blood_oxygen) and respiratory rate (respiratory_rate/breath_rate/breathing_rate/breath) tokens to SeriesType.oxygen_saturation and SeriesType.respiratory_rate. Fall back to the Sleep object's `spo2.value` (single nightly average emitted at sleep midpoint) when intraday samples aren't returned.
 - retire_when:               get_timeseries response for ultrahuman provider returns at least one record with type=oxygen_saturation or type=respiratory_rate when the user has data for those metrics.
 - upstream_equivalent_check: providers/ultrahuman/data_247.py::_RESPIRATORY_TYPES
+- rebased_note: 2026-10-19 vs upstream d18304f8 (0.10.0) — REBASED and narrowed. #1501 made load_and_save_all return Sync247Result and moved per-day persistence into `_save_daily_activity`; the patch's dict-returning copy broke every Ultrahuman sync (AttributeError on `.outcomes`; 17 of 48 ultrahuman tests failed) and shadowed DAILY_SCALAR_SERIES (sleep_rhr, temperature_deviation, active_minutes -> exercise_time). The patch no longer replaces load_and_save_all: it decorates normalize_activity_samples (upstream original + spo2/respiratory_rate buckets) and wholesale-replaces `_save_daily_activity` (upstream body + SpO2/RR type tokens + the Sleep spo2 midpoint fallback + `source=` on all four DAILY_SCALAR_SERIES constructors). Behaviour change: the Sleep spo2 average is now emitted only when no intraday SpO2 came back (it used to be emitted always, duplicating a row). Historical Ultrahuman `active_time` rows written by the old copy are relabelled to exercise_time by upstream's startup script `relabel_ultrahuman_active_time_to_exercise_time.py`. New tests: backend/tests/providers/ultrahuman/test_ultrahuman_spo2_patch.py. retire_when not met.
 - local_patch_file:          ow-patches/local/fix-spo2-respiratory-missing.py
 
 ---
@@ -202,7 +202,7 @@ kubectl -n open-wearables exec deploy/app -- ls /root_project/ow-patches/apply.p
 - what_we_changed:           Bucket the three daily activity aggregator queries by user-local date instead of UTC. Resolves the bug where workouts crossing a UTC midnight (e.g. a Sunday morning trail run in Brisbane that starts 21:14 UTC Saturday) split across two day-cards in the API and the user's "Sunday" card shows post-run HR (~81/128) instead of trail-run HR (~161/186). Zone-offset-first: honour a populated EventRecord.zone_offset, else `(recorded_at AT TIME ZONE user.timezone)::date`, else UTC.
 - retire_when:               DataPointSeriesRepository.get_daily_activity_aggregates groups by user-local date (any of: AT TIME ZONE user.timezone, ZoneInfo-based bucketing, per-row zone_offset cast). Marker: any reference to `_local_date_bucket_expr` or equivalent timezone-aware bucketing helper in DataPointSeriesRepository.
 - upstream_equivalent_check: backend/app/repositories/data_point_series_repository.py::_local_date_bucket_expr
-- audit_note: 2026-09-20 vs upstream 4aa4dbf5 (0.9.0) — KEEP AS-IS. check_upstream.py flagged get_daily_activity_aggregates as changed; the ast-extracted upstream diff since 53de57ca is one line, `SeriesType.energy` -> `SeriesType.active_energy` (b6c0e2b2, #1643), which was re-applied to the patch in the same reconcile. get_daily_active_minutes and get_daily_intensity_minutes are hash-identical. Patch vs upstream now differs only by the local_date coalesce + `_resolve_user_timezone` and docstring indentation. retire_when not met: upstream still buckets by `coalesce(zone_offset, +00:00)`.
+- rebased_note: 2026-10-19 vs upstream d18304f8 (0.10.0) — REBASED. All three bodies rebuilt from upstream's current code; re-acquired #1801 `total_energy_sum` (SELECT, series IN-filter, result dict) and None-not-0 sums for steps/active/basal, and a28f5314's `self._local_day_window` two-sided recorded_at bound. Only remaining diff is the zone_offset -> user.timezone -> UTC `local_date` coalesce + `_resolve_user_timezone`. The stale copy dropped provider totals and reported a 0.0 basal, which made summaries compute active+0 totals. Added backend/tests/test_ow_patch_activity_summary_utc_bucketing.py (fails against the stale copy). retire_when still unmet: upstream buckets by `coalesce(zone_offset, '+00:00')`.
 - local_patch_file:          ow-patches/local/fix-activity-summary-utc-bucketing.py
 
 ---
@@ -235,6 +235,7 @@ kubectl -n open-wearables exec deploy/app -- ls /root_project/ow-patches/apply.p
 - what_we_changed:           When EventRecord.zone_offset is NULL (which is the common case for Garmin Connect / Ultrahuman sync paths), upstream falls back to UTC for the `local_sleep_date` bucketing. Replace the fallback with `(end_datetime AT TIME ZONE user.timezone)::date` so a Sunday-morning Brisbane wake doesn't land on the previous UTC day. When user.timezone is also unset, falls through to UTC (= upstream behaviour) so disabling the patch is safe.
 - retire_when:               EventRecordRepository.get_sleep_summaries falls back to a non-UTC source when zone_offset is null (i.e. uses user.timezone or any other timezone-aware mechanism for the wake-date bucket).
 - upstream_equivalent_check: backend/app/repositories/event_record_repository.py::func.timezone
+- rebased_note: 2026-10-19 vs upstream d18304f8 (0.10.0) — REBASED. Re-applied the user-tz `local_sleep_date` fallback onto upstream #1845's body (new `provider_order` / `device_type_order` args, `source_rank` row_number window partitioned by local_sleep_date, `source_rank == 1` filter before cursor/limit). The stale copy's 6-arg signature raised TypeError against SummariesService's 8-arg call (17 of 18 sleep tests failed with it). `_get_sleep_sessions` unchanged upstream. Composers in apply.py unaffected (return keys unchanged). retire_when still unmet.
 - local_patch_file:          ow-patches/local/fix-sleep-summary-utc-bucketing.py
 
 ---
@@ -345,6 +346,7 @@ kubectl -n open-wearables exec deploy/app -- ls /root_project/ow-patches/apply.p
 - crash_loop_caveat:         Late acks assume the task eventually succeeds. A task that fails DETERMINISTICALLY is never acked and is redelivered every `visibility_timeout` forever — Celery counts retries, not redeliveries, so nothing gives up. Observed 2026-08-30: a 1-year backfill OOM-killed the worker (exitCode 137) ~3m in, was redelivered at exactly +6h, and OOM'd again, orphaning another run record each cycle. Mitigated by `historical-sync-chunking` below; the ceiling itself is still unbuilt.
 - retire_when:               Upstream sets `acks_late=True` on `sync_vendor_data` or `task_acks_late` in `create_celery` (or documents an equivalent restart-safety story). Checked 2026-09-13 against 53de57ca: upstream's `sync_vendor_data` is still a bare `@shared_task`.
 
+- reconcile_note:            2026-10-19 vs upstream d18304f8 (0.10.0): #1851 (31761bbb) moved task names and queues to `CeleryTask` / `CeleryQueue`; the decorator is now `@shared_task(name=CeleryTask.SYNC_VENDOR_DATA, acks_late=True)` and `task_default_queue=CeleryQueue.DEFAULT` kept next to `worker_prefetch_multiplier=1`. retire_when still unmet: upstream's `sync_vendor_data` has no acks_late.
 ---
 
 ## ci-publish-images-upstream-only
@@ -360,6 +362,20 @@ kubectl -n open-wearables exec deploy/app -- ls /root_project/ow-patches/apply.p
 - structural_note:           One-line edit to an upstream file; conflicts if upstream touches the `validate` job header, which is intended. Candidate upstream contribution (forks hit this generically) — but open it from a clean upstream clone, never from this checkout (see FORK.md section 5 / the block-upstream-pr hook).
 - retire_when:               Upstream gates publish-images.yml on its own repository (any `github.repository`/`repository_owner` condition on the publish jobs), or moves the schedule trigger somewhere forks do not inherit.
 - upstream_equivalent_check: .github/workflows/publish-images.yml::repository_owner
+
+## garmin-connect-default-priority
+
+- patch_id:                  garmin-connect-default-priority
+- status:                    local_only
+- replacement_kind:          structural
+- upstream_url:              https://github.com/the-momentum/open-wearables
+- file:                      backend/app/schemas/enums/provider.py
+- symbol:                    DEFAULT_PROVIDER_PRIORITY
+- what_we_changed:           Added `ProviderName.GARMIN_CONNECT: 15` to the default provider priority map, appended after upstream's 14 entries so no upstream number moves.
+- why:                       Upstream #1603 seeds a priority row for every provider at startup from this map, and its test `test_default_order_covers_every_connectable_provider` requires every ProviderName except UNKNOWN/INTERNAL to be present. The fork-only garmin_connect provider was missing, so that test failed after the 2026-10-19 reconcile, and a fresh deployment would have given garmin_connect a next-free number instead of a deliberate one. Existing databases keep the priority rows they already have.
+- structural_note:           One-line edit to an upstream file; conflicts when upstream adds a provider to the map, which is intended.
+- retire_when:               Never while garmin_connect is fork-only; drop with the provider.
+- upstream_equivalent_check: backend/app/schemas/enums/provider.py::GARMIN_CONNECT: 
 
 ---
 
@@ -380,7 +396,7 @@ upstream/main -- <files>`. There's no flag to flip.
 ## frontend-display-timezone
 
 - patch_id:           frontend-display-timezone
-- status:             local_only
+- status:             retired
 - replacement_kind:   structural
 - upstream_url:       https://github.com/the-momentum/open-wearables
 - files:
@@ -416,11 +432,25 @@ upstream/main -- <files>`. There's no flag to flip.
   one display) — would surface as `User.timezone` in upstream + a display-tz
   context provider on the user dashboard.
 - discovery:          `grep -r 'formatInTz\|DisplayTimezoneProvider\|date-fns-tz' frontend/src/`
+- retirement_note:    2026-10-19 vs upstream d18304f8 (0.10.0). Upstream replaced the React
+  dashboard with a SvelteKit portal (8ce9aa99 and the `ui:` series, #1786 cookie
+  sessions). Every file this patch edited was deleted upstream, so the reconcile
+  took upstream's frontend wholesale and removed the fork's React additions
+  (dates.ts, display-timezone.tsx, timezone-selector.tsx, sleep.test.ts, the
+  date-fns-tz dependency, and the fork's credential-provider section in the
+  providers tab and the $userId page). ACCEPTED REGRESSION until ported: the
+  Svelte portal renders every datetime with `timeZone: 'UTC'`
+  (frontend/src/lib/utils/format.ts, syncs/format.ts, charts/ticks.ts) and has no
+  User.timezone field on the profile form, no display-timezone picker, and no
+  UI for connecting a credential-based provider (garmin_connect is connected via
+  `POST /api/v1/users/{user_id}/connections/garmin_connect`). The backend half
+  (User.timezone, timezone echoes, local-date bucketing) is unaffected. Port
+  tracked in TODO.md.
 
 ## celery-worker-signal-forwarding
 
 - patch_id:                  celery-worker-signal-forwarding
-- status:                    local_only
+- status:                    retired
 - replacement_kind:          structural
 - upstream_url:              https://github.com/the-momentum/open-wearables
 - file:                      backend/scripts/start/worker.sh
@@ -430,6 +460,7 @@ upstream/main -- <files>`. There's no flag to flip.
 - structural_note:           Structural edit to an upstream script (upstream's copy is byte-identical to the pre-fix fork copy), so it conflicts on merge; intended. Upstream candidate: any Kubernetes user of this image has the same problem.
 - retire_when:               Upstream's worker.sh (or the image entrypoint) forwards SIGTERM to the celery processes, e.g. via `exec`, `trap`, or a tini/dumb-init entrypoint.
 - upstream_equivalent_check: backend/scripts/start/worker.sh::trap
+- retirement_note:           2026-10-19 vs upstream d18304f8 (0.10.0) — RETIRED. Upstream #1771 (456b8250) rewrote worker.sh to trap TERM/INT, forward SIGTERM to both celery pids, and wait for each to exit (with bash-5 interrupted-wait handling), which satisfies retire_when. Took upstream's script verbatim. Difference accepted: upstream signals the two worker pids rather than `kill -- -1` (every process in the container), which is equivalent here since the workers are the only children; and the container now exits when the CPU worker exits, after stopping the I/O worker.
 
 ---
 
@@ -450,6 +481,8 @@ upstream/main -- <files>`. There's no flag to flip.
 - structural_note:           STRUCTURAL edits to upstream files. `base_strategy.py` was previously identical to upstream, so this creates new divergence that will conflict on merge; that is intended. `sync_cancel_service.py` and `memory_guard.py` are new fork-owned modules, deliberately NOT additions to `sync_status_service.py`, because #1448 rewrites large parts of that file and a new-file add reconciles more cleanly than a conflict inside a rewritten module.
 - reconcile_watch:           Upstream PR #1501 refactors `load_and_save_all` heavily (`Sync247Result`, `Sync247Run.step`, `resolve_window`). `fix-garmin-connect-rate-limit-backoff` wholesale-replaces that exact method, so it will silently shadow #1501 on merge. Diff it before trusting it.
 - reconcile_note:            2026-09-13 (upstream 53de57ca): #1448 landed (`SyncRun` table, `emit_sync_*` renames, `run_status_from`, `try_record_data_types`, stale sweep) and #1591 REMOVED the Garmin backfill cancel/retry endpoints and `gc_stuck_backfills`. The fork's `POST /sync/runs/{run_id}/cancel` and `SyncCancelledError` branch were re-applied on top; the cancel branch now calls `emit_sync_cancelled(..., scope=sync_scope)` (upstream's name, was the fork alias `cancelled`). base_strategy.py chunking auto-merged (upstream only added `webhook_subscription_per_user`). retire_when still unmet: upstream sends one task per historical sync and has no pull-provider cancel endpoint.
+- reconcile_note_2:          2026-10-19 vs upstream d18304f8 (0.10.0): the chunk signatures now use `CeleryTask.SYNC_VENDOR_DATA` (#1851). #1501 landed: `load_and_save_all` returns `Sync247Result` for every provider, so the fork-owned garmin_connect `load_and_save_all` was converted (per-day errors still swallowed as before; body composition / VO2max failures recorded via `fail()`), the sync route's fork start_date/end_date handling now feeds upstream's `SyncResponse`, and the fork's cursor guard in sync_vendor_data reads the data_247 summary's `status == failed` (it used to look for `success: False`, which #1501 no longer emits). The cancel handler also clears the primary lease before releasing it, matching upstream's ordering. retire_when still unmet.
+- test_divergence:           2026-10-19: upstream's `test_sync_vendor_data_success` now sets `mock_strategy.data_247 = None` (FORK DIVERGENCE comment). With #1501 an auto-MagicMock data_247 fails the 24/7 run, and the fork's cursor guard then correctly refuses to advance last_synced_at, which that upstream assertion expects.
 - retire_when:               Upstream chunks historical syncs at the task level (marker: more than one `sync_vendor_data` message per `start_historical_sync` call) AND exposes a cancel endpoint for pull-provider runs.
 
 ---
