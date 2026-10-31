@@ -14,6 +14,7 @@ from app.models import EventRecord
 from app.repositories import EventRecordRepository, UserConnectionRepository
 from app.schemas.enums import SeriesType, daily_total_flag
 from app.schemas.model_crud.activities import (
+    CalendarPeriod,
     EventRecordCreate,
     EventRecordDetailCreate,
     SleepStage,
@@ -449,6 +450,11 @@ class GarminConnect247Data(Base247DataTemplate):
                         # summable — so a daily total double-counts against another
                         # provider and mis-aggregates over multi-day ranges.
                         is_daily_total=daily_total_flag(series_type, is_daily=True),
+                        # The aggregates rollup skips is_daily_total samples, so a
+                        # daily total only reaches summaries as a provider day row.
+                        # cdate is Garmin's local calendar day; of_date's UTC
+                        # midnight with a +00:00 offset keys back to that same date.
+                        period=CalendarPeriod.of_date(cdate),
                     )
                 )
             except Exception as exc:

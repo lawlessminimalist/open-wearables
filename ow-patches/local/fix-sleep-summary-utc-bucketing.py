@@ -49,9 +49,11 @@ Scope
 These are WHOLESALE method replacements, so they must track upstream's current
 bodies verbatim except for the single `local_sleep_date` delta above. In
 particular they preserve upstream's:
-  * #1259 physio LATERAL subquery (avg_hr / avg_hrv_sdnn / avg_hrv_rmssd /
-    avg_resp / avg_spo2, averaged over each row's [min_start_time, max_end_time)
-    window),
+  * the aggregates physiology path (#1931-#1941): ``_get_sleep_sessions`` returns
+    ``(sessions_by_key, main_sleeps_by_key)`` and ``get_sleep_summaries`` merges
+    ``self._sleep_physiology(...)`` (event_record_aggregate, then own-device
+    samples, provider day series_aggregate, other devices) into each night,
+    replacing the old #1259 LATERAL over data_point_series,
   * #1257 provider grouping + per-session `sessions` breakdown attached via
     ``self._get_sleep_sessions``,
   * #1845 paging by night: the required ``provider_order`` / ``device_type_order``
@@ -61,6 +63,11 @@ particular they preserve upstream's:
 
 Rebased 2026-10-19 onto upstream d18304f8; the previous copy lacked #1845's two
 positional arguments, so SummariesService's 8-argument call raised TypeError.
+
+Rebased 2026-10-31 onto upstream 8adb8d0b. #1930 renamed DataPointSeries to
+SeriesSample, so the old copy's `from app.models import DataPointSeries` raised
+ImportError and, because apply_patches() re-raises at app import, took the whole
+backend down. The physio LATERAL was also stale against the aggregates rewrite.
 
 Both ``get_sleep_summaries`` AND ``_get_sleep_sessions`` are replaced with the
 identical `local_sleep_date` fallback, so the summary key (user-tz date) and the
@@ -75,30 +82,27 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import (
-    UUID as SQL_UUID,
-    Date,
-    Integer,
-    Interval,
-    String,
-    and_,
-    asc,
-    case,
-    cast,
-    desc,
-    func,
-    lateral,
-    literal,
-    select,
-    true,
-    tuple_,
-)
+from sqlalchemy import UUID as SQL_UUID
+from sqlalchemy import Date, Integer, Interval, String, and_, asc, case, cast, desc, func, literal, tuple_
 
 from app.database import DbSession
-from app.models import DataPointSeries, DataSource, EventRecord, SleepDetails
+from app.models import DataSource, EventRecord, SleepDetails
 from app.repositories.repositories import source_priority_order
-from app.schemas.enums import DeviceType, ProviderName, SeriesType, get_series_type_id
+from app.schemas.enums import DeviceType, EventCategory, ProviderName
 from app.utils.pagination import decode_cursor
+
+
+def _upstream_sleep_physiology_keys() -> dict:
+    """Upstream's private _SLEEP_PHYSIOLOGY, looked up at call time.
+
+    A module-level import of a private upstream name turns an upstream rename into an
+    ImportError at app boot (apply_patches re-raises), the failure the 2026-10-31 rebase
+    fixed for DataPointSeries. Looked up lazily, a rename fails only the request, and
+    the sleep-summary tests catch it.
+    """
+    import sys  # noqa: PLC0415
+
+    return sys.modules["app.repositories.event_record_repository"]._SLEEP_PHYSIOLOGY
 
 
 def _resolve_user_timezone(db_session: DbSession, user_id: UUID) -> str:
@@ -132,10 +136,6 @@ def get_sleep_summaries(
     - deep_minutes, light_minutes, rem_minutes, awake_minutes
     - nap_count, nap_duration_minutes
     """
-    # Resolve the user's IANA timezone once — used as the local_sleep_date
-    # fallback when EventRecord.zone_offset is NULL (fork delta vs upstream).
-    user_tz = _resolve_user_timezone(db_session, user_id)
-
     # Helper: condition for "is NOT a nap" (main sleep)
     # is_nap can be True, False, or NULL - we treat NULL as "not a nap"
     is_main_sleep = func.coalesce(SleepDetails.is_nap, False) == False  # noqa: E712
@@ -143,13 +143,9 @@ def get_sleep_summaries(
     # Local calendar date the session ended (wake-up date) — mirrors score
     # date logic in fill_missing_sleep_scores_task so chart, score, and
     # session list all key on the same date.
-    #
-    # FORK DELTA: upstream falls back to UTC (`coalesce(zone_offset, "+00:00")`)
-    # when zone_offset is NULL. We instead prefer the user's IANA timezone:
-    #   1. If zone_offset is set on the row, honor it (device-supplied offset).
-    #   2. Otherwise convert end_datetime via the user's IANA timezone.
-    #   3. If user.timezone is also null, _resolve_user_timezone returns 'UTC',
-    #      so the convert resolves to UTC — identical to upstream behaviour.
+    # FORK DELTA: a NULL zone_offset reads as the user's IANA timezone, not UTC
+    # (UTC only when user.timezone is also unset, i.e. upstream behaviour).
+    user_tz = _resolve_user_timezone(db_session, user_id)
     local_sleep_date = cast(
         func.coalesce(
             EventRecord.end_datetime + cast(EventRecord.zone_offset, Interval),
@@ -236,7 +232,7 @@ def get_sleep_summaries(
         .outerjoin(SleepDetails, SleepDetails.record_id == EventRecord.id)
         .filter(
             DataSource.user_id == user_id,
-            EventRecord.category == "sleep",
+            EventRecord.category == EventCategory.SLEEP,
             EventRecord.end_datetime >= start_date - timedelta(days=1),
             local_sleep_date >= cast(start_date, Date),
             local_sleep_date < cast(end_date, Date),
@@ -249,41 +245,6 @@ def get_sleep_summaries(
             DataSource.device_type,
         )
     ).subquery()
-
-    hr_id = get_series_type_id(SeriesType.heart_rate)
-    sdnn_id = get_series_type_id(SeriesType.heart_rate_variability_sdnn)
-    rmssd_id = get_series_type_id(SeriesType.heart_rate_variability_rmssd)
-    resp_id = get_series_type_id(SeriesType.respiratory_rate)
-    spo2_id = get_series_type_id(SeriesType.oxygen_saturation)
-
-    # Lateral subquery: for each sleep row, average physio data within
-    # [min_start_time, max_end_time) — exact window, no date-grouping mismatch.
-    physio_lateral = lateral(
-        select(
-            func.avg(case((DataPointSeries.series_type_definition_id == hr_id, DataPointSeries.value))).label(
-                "avg_hr"
-            ),
-            func.avg(case((DataPointSeries.series_type_definition_id == sdnn_id, DataPointSeries.value))).label(
-                "avg_hrv_sdnn"
-            ),
-            func.avg(case((DataPointSeries.series_type_definition_id == rmssd_id, DataPointSeries.value))).label(
-                "avg_hrv_rmssd"
-            ),
-            func.avg(case((DataPointSeries.series_type_definition_id == resp_id, DataPointSeries.value))).label(
-                "avg_resp"
-            ),
-            func.avg(case((DataPointSeries.series_type_definition_id == spo2_id, DataPointSeries.value))).label(
-                "avg_spo2"
-            ),
-        )
-        .join(DataSource, DataPointSeries.data_source_id == DataSource.id)
-        .where(
-            DataSource.user_id == user_id,
-            DataPointSeries.series_type_definition_id.in_([hr_id, sdnn_id, rmssd_id, resp_id, spo2_id]),
-            DataPointSeries.recorded_at >= subquery.c.min_start_time,
-            DataPointSeries.recorded_at < subquery.c.max_end_time,
-        )
-    )
 
     # Build main query from subquery, casting record_id back to UUID
     record_id_col = cast(subquery.c.record_id_text, SQL_UUID).label("record_id")
@@ -306,12 +267,7 @@ def get_sleep_summaries(
         subquery.c.efficiency_duration_sum,
         subquery.c.nap_count,
         subquery.c.nap_duration,
-        physio_lateral.c.avg_hr,
-        physio_lateral.c.avg_hrv_sdnn,
-        physio_lateral.c.avg_hrv_rmssd,
-        physio_lateral.c.avg_resp,
-        physio_lateral.c.avg_spo2,
-    ).outerjoin(physio_lateral, true())
+    )
     query = query.filter(subquery.c.source_rank == 1)
 
     # Handle cursor pagination
@@ -364,18 +320,17 @@ def get_sleep_summaries(
                 # Nap tracking
                 "nap_count": int(row.nap_count) if row.nap_count is not None else None,
                 "nap_duration_minutes": int(row.nap_duration) // 60 if row.nap_duration is not None else None,
-                # Physio averages from data_point_series
-                "avg_hr": float(row.avg_hr) if row.avg_hr is not None else None,
-                "avg_hrv_sdnn": float(row.avg_hrv_sdnn) if row.avg_hrv_sdnn is not None else None,
-                "avg_hrv_rmssd": float(row.avg_hrv_rmssd) if row.avg_hrv_rmssd is not None else None,
-                "avg_resp": float(row.avg_resp) if row.avg_resp is not None else None,
-                "avg_spo2": float(row.avg_spo2) if row.avg_spo2 is not None else None,
             }
         )
 
     # Attach per-session breakdown (individual sleep/nap records) for each summary,
     # keyed by the same (date, provider, source, device_model) grouping identity.
-    sessions_by_key = self._get_sleep_sessions(db_session, user_id, start_date, end_date)
+    sessions_by_key, main_sleeps_by_key = self._get_sleep_sessions(db_session, user_id, start_date, end_date)
+    # Only this page's nights are read from the aggregate table, not every night in the range.
+    page_keys = {(s["sleep_date"], s["provider"], s["source"], s["device_model"]) for s in summaries}
+    physiology = self._sleep_physiology(
+        db_session, {key: sleeps for key, sleeps in main_sleeps_by_key.items() if key in page_keys}
+    )
     for summary in summaries:
         key = (
             summary["sleep_date"],
@@ -384,6 +339,7 @@ def get_sleep_summaries(
             summary["device_model"],
         )
         summary["sessions"] = sessions_by_key.get(key, [])
+        summary.update(physiology.get(key, dict.fromkeys(_upstream_sleep_physiology_keys())))
 
     return summaries
 
@@ -394,16 +350,17 @@ def _get_sleep_sessions(
     user_id: UUID,
     start_date: datetime,
     end_date: datetime,
-) -> dict[tuple, list[dict]]:
-    """Get individual sleep/nap sessions keyed by (sleep_date, provider, source, device_model).
+) -> tuple[dict[tuple, list[dict]], dict[tuple, list[tuple[UUID, int]]]]:
+    """Get individual sleep/nap sessions keyed by (sleep_date, provider, source, device_model),
+    and per key the main sleeps' record ids with their durations.
 
     Mirrors the date filter and grouping identity of ``get_sleep_summaries`` but returns one
     entry per underlying EventRecord instead of collapsing them. Per-session duration prefers
     net sleep time (SleepDetails.sleep_total_duration_minutes) and falls back to wall-clock
     duration, matching the aggregate duration logic. Sessions are sorted by start time.
     """
-    # FORK DELTA: identical local_sleep_date fallback to get_sleep_summaries so the
-    # per-session key matches the summary key when zone_offset is NULL. See module docstring.
+    # FORK DELTA: a NULL zone_offset reads as the user's IANA timezone, not UTC
+    # (UTC only when user.timezone is also unset, i.e. upstream behaviour).
     user_tz = _resolve_user_timezone(db_session, user_id)
     local_sleep_date = cast(
         func.coalesce(
@@ -425,6 +382,7 @@ def _get_sleep_sessions(
     rows = (
         db_session.query(
             local_sleep_date.label("sleep_date"),
+            EventRecord.id.label("record_id"),
             EventRecord.start_datetime.label("start_time"),
             EventRecord.end_datetime.label("end_time"),
             EventRecord.zone_offset.label("zone_offset"),
@@ -438,18 +396,21 @@ def _get_sleep_sessions(
         .outerjoin(SleepDetails, SleepDetails.record_id == EventRecord.id)
         .filter(
             DataSource.user_id == user_id,
-            EventRecord.category == "sleep",
+            EventRecord.category == EventCategory.SLEEP,
             EventRecord.end_datetime >= start_date - timedelta(days=1),
             local_sleep_date >= cast(start_date, Date),
             local_sleep_date < cast(end_date, Date),
         )
-        .order_by(asc(local_sleep_date), asc(EventRecord.start_datetime))
+        .order_by(local_sleep_date.asc(), EventRecord.start_datetime.asc())
         .all()
     )
 
     sessions_by_key: dict[tuple, list[dict]] = {}
+    main_sleeps_by_key: dict[tuple, list[tuple[UUID, int]]] = {}
     for row in rows:
         key = (row.sleep_date, row.provider, row.source, row.device_model)
+        if not row.is_nap:
+            main_sleeps_by_key.setdefault(key, []).append((row.record_id, int(row.duration_seconds or 0)))
         sessions_by_key.setdefault(key, []).append(
             {
                 "start_time": row.start_time,
@@ -459,12 +420,13 @@ def _get_sleep_sessions(
                 "is_nap": bool(row.is_nap),
             }
         )
-    return sessions_by_key
+    return sessions_by_key, main_sleeps_by_key
 
 
 def install() -> None:
     """Replace get_sleep_summaries and _get_sleep_sessions with the patched versions."""
     import sys  # noqa: PLC0415
+
     import app.repositories.event_record_repository  # noqa: F401, PLC0415
 
     repo_module = sys.modules["app.repositories.event_record_repository"]

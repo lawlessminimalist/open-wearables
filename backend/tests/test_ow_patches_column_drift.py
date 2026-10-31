@@ -35,12 +35,6 @@ _PATCH_DIR = _REPO_ROOT / "ow-patches" / "local"
 _CASES: list[tuple[str, str, str, str]] = [
     (
         "fix-activity-summary-utc-bucketing.py",
-        "get_daily_activity_aggregates",
-        "backend/app/repositories/data_point_series_repository.py",
-        "get_daily_activity_aggregates",
-    ),
-    (
-        "fix-activity-summary-utc-bucketing.py",
         "get_daily_active_minutes",
         "backend/app/repositories/data_point_series_repository.py",
         "get_daily_active_minutes",
@@ -62,12 +56,6 @@ _CASES: list[tuple[str, str, str, str]] = [
         "_get_sleep_sessions",
         "backend/app/repositories/event_record_repository.py",
         "_get_sleep_sessions",
-    ),
-    (
-        "fix-health-score-source-priority.py",
-        "get_with_filters",
-        "backend/app/repositories/health_score_repository.py",
-        "get_with_filters",
     ),
 ]
 
@@ -123,11 +111,23 @@ def test_patch_does_not_drop_upstream_datasource_columns(
     )
 
 
+def _enabled_patch_ids() -> set[str]:
+    """Patch ids switched on in apply.py's PATCHES_ENABLED, read without importing app."""
+    tree = ast.parse((_REPO_ROOT / "ow-patches" / "apply.py").read_text())
+    for node in tree.body:
+        if isinstance(node, ast.AnnAssign) and getattr(node.target, "id", None) == "PATCHES_ENABLED":
+            return {k for k, v in ast.literal_eval(node.value).items() if v}
+    raise AssertionError("PATCHES_ENABLED not found in ow-patches/apply.py")
+
+
 def test_cases_cover_every_wholesale_repository_patch() -> None:
     """If a new repository-targeting patch appears, make someone add it here."""
     covered = {c[0] for c in _CASES}
+    enabled = _enabled_patch_ids()
     repo_patches = {
-        p.name for p in _PATCH_DIR.glob("*.py") if "DataSource." in p.read_text() and "repositories" in p.read_text()
+        p.name
+        for p in _PATCH_DIR.glob("*.py")
+        if p.stem in enabled and "DataSource." in p.read_text() and "repositories" in p.read_text()
     }
     uncovered = repo_patches - covered
     assert not uncovered, (

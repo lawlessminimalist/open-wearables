@@ -55,7 +55,10 @@ PATCHES_ENABLED: dict[str, bool] = {
     "fix-garmin-connect-activity-hr-samples": False,
     "fix-summary-timezone-echo": True,
     "fix-sleep-summary-utc-bucketing": True,
-    "fix-health-score-source-priority": True,
+    # Retired 2026-10-31: upstream #1877 (a72b05e4) dedupes OW sleep scores per day
+    # by the score's data_source priority. Its new five-arg signature made the
+    # patch's three-arg copy raise TypeError on every call. See PATCHES.md.
+    "fix-health-score-source-priority": False,
     # Retired 2026-09-13: moved into source (garmin_connect/client.py +
     # data_247.py). Both files are fork-only, so the patch shadowed the fork's own
     # later edits — it hid the VO2max sync added to load_and_save_all on
@@ -234,7 +237,7 @@ _STANDALONE_PATCHES = (
     "fix-activity-summary-utc-bucketing",
     # fix-garmin-connect-activity-hr-samples is retired into source — see PATCHES.md.
     "fix-sleep-summary-utc-bucketing",
-    "fix-health-score-source-priority",
+    # fix-health-score-source-priority is retired — upstream #1877 dedupes by source. See PATCHES.md.
     # fix-garmin-connect-rate-limit-backoff is retired into source — see PATCHES.md.
     "fix-provider-prefix-shadowing",
 )
