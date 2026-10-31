@@ -60,3 +60,12 @@ ALLOW|gh pr create --repo lawlessminimalist/open-wearables --title x --body-file
 ALLOW|git log --format=%B | grep -c 'Co-Authored-By: Claude'
 ALLOW|grep -rn 'noreply@anthropic.com' CHANGELOG.md
 ALLOW|gh pr view 21 --repo lawlessminimalist/open-wearables --json body
+# Rule 4 review follow-ups (2026-10-31): attached -F forms, per-segment scope, files written in the same command
+DENY|git commit -F.claude/hooks/cases/attributed_body.md
+DENY|git commit -aF .claude/hooks/cases/attributed_body.md
+ALLOW|git commit -F does-not-exist-anywhere.txt
+ALLOW|git commit -F .claude/hooks/cases/clean_body.md
+ALLOW|git commit -m wip && grep -c noreply@anthropic.com CHANGELOG.md
+ALLOW|git tag -l && git log --grep 'Generated with Claude Code'
+ALLOW|git notes show HEAD && grep 'Co-Authored-By: Claude' x.txt
+DENY|git tag -a v1 -m "Generated with Claude Code"

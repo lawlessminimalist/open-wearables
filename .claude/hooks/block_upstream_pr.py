@@ -30,6 +30,8 @@ fine. Rules (deny = the tool call never runs):
      carries AI attribution (a Claude Co-Authored-By trailer, the anthropic.com noreply
      address, or "Generated with Claude Code"). The whole command is searched, heredoc
      bodies included, and so is any file passed as -F / --file / --body-file / --notes-file.
+     Each segment is checked against its own text and the heredocs it opens, not the whole
+     command. This is a guess from shell text; .githooks/commit-msg checks the real message.
      Why: since 2026-10-19 the repo convention is no attribution; the harness injected
      trailers into the 2026-10-31 reconcile anyway and the PR branch had to be rewritten.
      .claude/settings.json `attribution` is the first layer and CI in ow-patches.yml the last.
@@ -93,13 +95,19 @@ def join_continuations(text: str) -> str:
 HEREDOC_RE = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
 
 
-def strip_heredocs(text: str) -> str:
+def strip_heredocs(text: str, bodies: dict[str, str] | None = None) -> str:
+    """Remove heredoc bodies; when `bodies` is given, record each body under its terminator."""
     out: list[str] = []
     terminator: str | None = None
+    body: list[str] = []
     for line in text.split("\n"):
         if terminator is not None:
             if line.strip() == terminator:
-                terminator = None
+                if bodies is not None:
+                    bodies[terminator] = bodies.get(terminator, "") + "\n".join(body) + "\n"
+                terminator, body = None, []
+            else:
+                body.append(line)
             continue
         out.append(line)
         m = HEREDOC_RE.search(line)
@@ -267,24 +275,52 @@ class Checker:
         """True when this segment writes a commit/tag message or a GitHub body."""
         head = tokens[0]
         if head == "git":
-            return self.git_subcommand(tokens)[1] in GIT_MESSAGE_VERBS
+            i, sub = self.git_subcommand(tokens)
+            rest = tokens[i + 1:]
+            if sub == "tag":
+                return not any(t in ("-l", "--list", "-d", "--delete", "-v", "--verify") for t in rest)
+            if sub == "notes":
+                return bool(rest) and rest[0] in ("add", "append", "edit", "copy")
+            if sub == "merge":
+                return not any(t in ("--abort", "--quit") for t in rest)
+            return sub in GIT_MESSAGE_VERBS
         if head == "gh" and len(tokens) > 2:
             return tokens[1] in ("pr", "issue", "release") and tokens[2] in WRITE_VERBS
         return False
 
-    def check_attribution(self, full_text: str, tokens: list[str]) -> None:
-        texts = [full_text]
+    def message_files(self, tokens: list[str]) -> list[str]:
+        """Paths passed as a message or body file, in separate, =value or attached (-Fpath, -aF p) form."""
+        paths: list[str] = []
         for i, t in enumerate(tokens):
-            path = None
-            if t in MESSAGE_FILE_FLAGS and i + 1 < len(tokens):
-                path = tokens[i + 1]
+            nxt = tokens[i + 1] if i + 1 < len(tokens) else None
+            if t in MESSAGE_FILE_FLAGS:
+                if nxt is not None:
+                    paths.append(nxt)
             elif "=" in t and t.split("=", 1)[0] in MESSAGE_FILE_FLAGS:
-                path = t.split("=", 1)[1]
-            if path and path != "-":
-                try:
-                    texts.append((Path(self.cwd) / path).expanduser().read_text(errors="replace"))
-                except OSError:
-                    pass  # an unreadable file is git's or gh's error to report, not ours
+                paths.append(t.split("=", 1)[1])
+            elif re.match(r"^-[A-Za-z]*F", t) and not t.startswith("--"):
+                tail = t[t.index("F") + 1:]
+                if tail:
+                    paths.append(tail)
+                elif nxt is not None:
+                    paths.append(nxt)
+        return [p for p in paths if p != "-"]
+
+    def check_attribution(self, raw: str, tokens: list[str], bodies: dict[str, str]) -> None:
+        # The segment itself, plus the body of any heredoc it opens (e.g. -m "$(cat <<'MSG' ...)",
+        # --body-file - <<'MSG'). Other segments are not searched, so a grep in the same
+        # command does not trip the rule.
+        texts = [raw] + [bodies.get(m.group(2), "") for m in HEREDOC_RE.finditer(raw)]
+        for path in self.message_files(tokens):
+            target = Path(path).expanduser()
+            target = target if target.is_absolute() else Path(self.cwd) / target
+            try:
+                texts.append(target.read_text(errors="replace"))
+            except OSError:
+                # Usually written earlier in this same command (cat > f <<EOF ... && gh pr create
+                # --body-file f), so it does not exist yet: search every heredoc in the command.
+                # A file made some other way is left to .githooks/commit-msg (git) and CI (gh).
+                texts.extend(bodies.values())
         for text in texts:
             m = ATTRIBUTION_RE.search(text)
             if m:
@@ -295,18 +331,8 @@ class Checker:
                 )
 
     def check_git(self, raw: str, tokens: list[str]) -> None:
-        # find the subcommand: skip global options like -C <dir>, -c k=v, --git-dir=...
-        i = 1
-        while i < len(tokens):
-            t = tokens[i]
-            if t in ("-C", "-c", "--git-dir", "--work-tree", "--namespace"):
-                i += 2
-                continue
-            if t.startswith("-"):
-                i += 1
-                continue
-            break
-        if i >= len(tokens) or tokens[i] != "push":
+        i, sub = self.git_subcommand(tokens)
+        if sub != "push":
             return
         rest = tokens[i + 1:]
         for t in rest:
@@ -317,12 +343,11 @@ class Checker:
                 deny(f"Blocked: this pushes to {self.upstream}. Push to origin ({self.fork}) instead.")
 
     # -- driver --------------------------------------------------------------
-    def check_command(self, text: str, depth: int = 0, full_text: str | None = None) -> None:
+    def check_command(self, text: str, depth: int = 0) -> None:
         if depth > 4:
             return
-        # Attribution hides in heredoc bodies, so rule 4 searches the unstripped text.
-        full_text = text if full_text is None else full_text
-        text = strip_heredocs(join_continuations(text))
+        bodies: dict[str, str] = {}  # heredoc bodies by terminator, for rule 4
+        text = strip_heredocs(join_continuations(text), bodies)
         for raw in split_segments(text):
             tokens = unwrap(tokens_of(raw))
             if not tokens:
@@ -342,10 +367,10 @@ class Checker:
                             inner = tokens[j + 1]
                             break
                 if inner:
-                    self.check_command(inner, depth + 1, full_text)
+                    self.check_command(inner, depth + 1)
                 continue
             if head in ("gh", "git") and self.publishes_text(tokens):
-                self.check_attribution(full_text, tokens)
+                self.check_attribution(raw, tokens, bodies)
             if head == "gh":
                 self.check_gh(raw, tokens)
             elif head == "git":

@@ -56,3 +56,17 @@ cat > notes.md <<'MSG'
 Co-Authored-By: Claude <noreply@anthropic.com> is not allowed here
 MSG
 echo written
+====
+DENY
+cat > /tmp/ow-body-not-yet.md <<'MD'
+Body.
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+MD
+gh pr create --repo lawlessminimalist/open-wearables --title x --body-file /tmp/ow-body-not-yet.md
+====
+ALLOW
+cat > /tmp/ow-body-not-yet.md <<'MD'
+A clean body.
+MD
+gh pr create --repo lawlessminimalist/open-wearables --title x --body-file /tmp/ow-body-not-yet.md
