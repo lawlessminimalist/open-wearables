@@ -1,14 +1,9 @@
 {
-  "_upstream_sha": "d18304f8076a7710c48a4b279f8e8abd5a16887e",
+  "_upstream_sha": "8adb8d0b2fffb584abf4278a8c37c204155f9466",
   "fix-activity-summary-utc-bucketing": {
     "DataPointSeriesRepository.get_daily_active_minutes": {
       "file": "backend/app/repositories/data_point_series_repository.py",
       "hash": "eaaaa14a509129bc",
-      "kind": "body"
-    },
-    "DataPointSeriesRepository.get_daily_activity_aggregates": {
-      "file": "backend/app/repositories/data_point_series_repository.py",
-      "hash": "f2bf6a44ad8749ed",
       "kind": "body"
     },
     "DataPointSeriesRepository.get_daily_intensity_minutes": {
@@ -22,13 +17,6 @@
       "file": "backend/app/services/summaries_service.py",
       "hash": "f8c9d94bca69340d",
       "kind": "signature"
-    }
-  },
-  "fix-health-score-source-priority": {
-    "HealthScoreRepository.get_with_filters": {
-      "file": "backend/app/repositories/health_score_repository.py",
-      "hash": "b8301093f8763ba8",
-      "kind": "body"
     }
   },
   "fix-hrv-source-unknown": {
@@ -53,12 +41,12 @@
   "fix-sleep-summary-utc-bucketing": {
     "EventRecordRepository._get_sleep_sessions": {
       "file": "backend/app/repositories/event_record_repository.py",
-      "hash": "6af441554225e4c9",
+      "hash": "284b205e404e5a49",
       "kind": "body"
     },
     "EventRecordRepository.get_sleep_summaries": {
       "file": "backend/app/repositories/event_record_repository.py",
-      "hash": "74ff3c8333745236",
+      "hash": "599aeb04a52b93a3",
       "kind": "body"
     }
   },
@@ -72,7 +60,7 @@
   "fix-spo2-respiratory-missing": {
     "Ultrahuman247Data._save_daily_activity": {
       "file": "backend/app/services/providers/ultrahuman/data_247.py",
-      "hash": "57d88e7706e30a84",
+      "hash": "01906fc8bc9c536c",
       "kind": "body"
     },
     "Ultrahuman247Data.normalize_activity_samples": {

@@ -6,12 +6,12 @@ upstream's Sync247Result-returning load_and_save_all.
 """
 
 import copy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 from sqlalchemy.orm import Session
 
-from app.models import DataPointSeries, DataSource, SeriesTypeDefinition
+from app.models import DataSource, SeriesAggregate, SeriesSample, SeriesTypeDefinition
 from app.schemas.enums.series_types import SeriesType
 from app.services.providers.factory import ProviderFactory
 from app.services.providers.sync_247_result import Sync247Result
@@ -23,11 +23,11 @@ _DAY = datetime(2024, 1, 15, tzinfo=timezone.utc)
 
 def _rows(db: Session, user_id: object, series: SeriesType) -> list[tuple[float, datetime, str | None]]:
     q = (
-        db.query(DataPointSeries.value, DataPointSeries.recorded_at, DataSource.source)
+        db.query(SeriesSample.value, SeriesSample.recorded_at, DataSource.source)
         .join(DataSource)
-        .join(SeriesTypeDefinition, DataPointSeries.series_type_definition_id == SeriesTypeDefinition.id)
+        .join(SeriesTypeDefinition, SeriesSample.series_type_definition_id == SeriesTypeDefinition.id)
         .filter(DataSource.user_id == user_id, SeriesTypeDefinition.code == series.value)
-        .order_by(DataPointSeries.recorded_at)
+        .order_by(SeriesSample.recorded_at)
     )
     return [(float(v), r, s) for v, r, s in q.all()]
 
@@ -93,8 +93,41 @@ class TestUltrahumanSpo2RespiratoryPatch:
         ]
 
     def test_daily_scalar_series_carry_source(self, db: Session, sample_ultrahuman_api_response: dict) -> None:
+        # Since upstream #1931 a daily scalar carries period=, so it lands in
+        # series_aggregate only. Its data_source must still be the source-labelled row.
         user_id, _ = _sync(db, copy.deepcopy(sample_ultrahuman_api_response))
 
-        rhr = _rows(db, user_id, SeriesType.resting_heart_rate)
-        assert rhr
-        assert {s for _, _, s in rhr} == {"ultrahuman"}
+        sources = (
+            db.query(DataSource.source)
+            .join(SeriesAggregate, SeriesAggregate.data_source_id == DataSource.id)
+            .join(SeriesTypeDefinition, SeriesAggregate.series_type_definition_id == SeriesTypeDefinition.id)
+            .filter(DataSource.user_id == user_id, SeriesTypeDefinition.code == SeriesType.resting_heart_rate.value)
+            .all()
+        )
+        assert sources
+        assert {s for (s,) in sources} == {"ultrahuman"}
+
+
+def test_daily_scalar_day_is_the_local_date_east_of_utc() -> None:
+    """A day_start at 13:00Z is local midnight at +11:00: the row belongs to the next date."""
+    import importlib.util  # noqa: PLC0415
+    from pathlib import Path  # noqa: PLC0415
+
+    path = Path(__file__).resolve().parents[4] / "ow-patches" / "local" / "fix-spo2-respiratory-missing.py"
+    spec = importlib.util.spec_from_file_location("spo2_patch", path)
+    assert spec is not None
+    assert spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    for day_start, want_day, want_offset in [
+        (datetime(2026, 10, 30, 13, tzinfo=timezone.utc), "2026-10-31", "+11:00"),  # Sydney, summer
+        (datetime(2026, 10, 30, 14, tzinfo=timezone.utc), "2026-10-31", "+10:00"),  # Brisbane
+        (datetime(2026, 10, 31, 0, tzinfo=timezone.utc), "2026-10-31", "+00:00"),  # UTC
+        (datetime(2026, 10, 31, 5, tzinfo=timezone.utc), "2026-10-31", "-05:00"),  # US Eastern
+    ]:
+        period = mod._ultrahuman_day(day_start)
+        local = period.start + timedelta(
+            hours=int(period.zone_offset[:3]), minutes=int(period.zone_offset[0] + period.zone_offset[4:])
+        )
+        assert (local.date().isoformat(), period.zone_offset) == (want_day, want_offset)

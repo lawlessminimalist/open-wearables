@@ -75,11 +75,8 @@ _EXPECTED_PATCHED: list[tuple[str, str, str]] = [
     # 2026-09-13 for the same fork-owned-file reason, found by
     # `check_upstream.py --lint`.
     # --- repositories ---
-    (
-        "app.repositories.health_score_repository",
-        "HealthScoreRepository.get_with_filters",
-        "fix-health-score-source-priority",
-    ),
+    # HealthScoreRepository.get_with_filters is no longer patched:
+    # fix-health-score-source-priority retired 2026-10-31 onto upstream #1877.
     (
         "app.repositories.event_record_repository",
         "EventRecordRepository.get_sleep_summaries",
@@ -90,11 +87,8 @@ _EXPECTED_PATCHED: list[tuple[str, str, str]] = [
         "EventRecordRepository._get_sleep_sessions",
         "fix-sleep-summary-utc-bucketing",
     ),
-    (
-        "app.repositories.data_point_series_repository",
-        "DataPointSeriesRepository.get_daily_activity_aggregates",
-        "fix-activity-summary-utc-bucketing",
-    ),
+    # DataPointSeriesRepository.get_daily_activity_aggregates is no longer patched:
+    # upstream deleted it in the aggregates rewrite (2026-10-31 reconcile).
     (
         "app.repositories.data_point_series_repository",
         "DataPointSeriesRepository.get_daily_active_minutes",

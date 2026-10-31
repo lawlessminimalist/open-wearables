@@ -1,6 +1,6 @@
 # patch_id:        fix-activity-summary-utc-bucketing
 # upstream_file:   backend/app/repositories/data_point_series_repository.py
-# upstream_symbol: DataPointSeriesRepository.get_daily_activity_aggregates + .get_daily_active_minutes + .get_daily_intensity_minutes
+# upstream_symbol: DataPointSeriesRepository.get_daily_active_minutes + .get_daily_intensity_minutes
 # retire_when:     DataPointSeriesRepository buckets daily aggregates by the user's IANA
 #                  timezone (not by per-row zone_offset with a UTC fallback).
 #                  Marker (same as PATCHES.md): `_local_date_bucket_expr` or any
@@ -10,7 +10,7 @@
 #                  unrelated. Upstream currently buckets by
 #                  `cast(recorded_at + coalesce(zone_offset, "+00:00"), Date)`.
 
-"""Bucket the three daily activity aggregates by the user's local date.
+"""Bucket the daily active and intensity minutes by the user's local date.
 
 Background
 ----------
@@ -68,6 +68,17 @@ verbatim:
 
 Rebased 2026-10-19 onto upstream d18304f8: the three bodies are upstream's
 verbatim except for the ``local_date`` expression.
+
+Narrowed 2026-10-31 onto upstream 8adb8d0b. The aggregates rewrite (#1930-#1941)
+deleted get_daily_activity_aggregates: SummariesService now reads day sums and
+heart rate from series_aggregate via daily_activity(), keyed by the rollup's
+``period_start + zone_offset`` with a NULL offset read as UTC, and never consults
+user.timezone. The replacement here had become an unused attribute, so it is
+gone. Only the two minutes methods remain live. Their bodies still match
+upstream's except for ``local_date``, but they now key days by user timezone
+while the rollup keys NULL-offset providers by UTC, so a day crossing UTC
+midnight can put minutes and steps on different cards. The local-day fix for
+the rollup itself is open in TODO.md (set zone_offset at ingestion).
 """
 
 from __future__ import annotations
@@ -75,14 +86,13 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import ColumnElement, Date, Interval, and_, asc, case, cast, func, literal_column
+from sqlalchemy import Date, Interval, asc, case, cast, func, literal_column
 
 from app.database import DbSession
 from app.models import DataSource
 from app.schemas.enums import SeriesType, get_series_type_id
 from app.schemas.responses.activity import (
     ActiveMinutesResult,
-    ActivityAggregateResult,
     IntensityMinutesResult,
 )
 
@@ -93,165 +103,6 @@ def _resolve_user_timezone(db_session: DbSession, user_id: UUID) -> str:
 
     tz = db_session.query(User.timezone).filter(User.id == user_id).scalar()
     return tz or "UTC"
-
-
-# ---------------------------------------------------------------------------
-# get_daily_activity_aggregates
-# ---------------------------------------------------------------------------
-
-
-def get_daily_activity_aggregates(
-    self,
-    db_session: DbSession,
-    user_id: UUID,
-    start_date: datetime,
-    end_date: datetime,
-) -> list[ActivityAggregateResult]:
-    """Get daily activity aggregates from time-series data.
-
-    Aggregates steps, energy, heart rate stats by date for a user.
-
-    Returns list of dicts with keys:
-    - activity_date, provider, source, device_model, device_type
-    - steps_sum, active_energy_sum, basal_energy_sum, total_energy_sum
-    - hr_avg, hr_max, hr_min
-    - distance_sum, flights_climbed_sum
-    """
-    # Series type IDs we need
-    steps_id = get_series_type_id(SeriesType.steps)
-    energy_id = get_series_type_id(SeriesType.active_energy)
-    basal_energy_id = get_series_type_id(SeriesType.basal_energy)
-    total_energy_id = get_series_type_id(SeriesType.total_energy)
-    hr_id = get_series_type_id(SeriesType.heart_rate)
-    distance_id = get_series_type_id(SeriesType.distance_walking_running)
-    flights_id = get_series_type_id(SeriesType.flights_climbed)
-    active_time_id = get_series_type_id(SeriesType.active_time)
-
-    # OUR DELTA: bucket by the user's local date. Priority chain:
-    #   1. zone_offset present on the row  -> honor it (identical to upstream)
-    #   2. zone_offset NULL                -> recorded_at AT TIME ZONE user.timezone
-    #   3. user.timezone also NULL         -> user_tz == "UTC", degrades to upstream UTC behavior
-    user_tz = _resolve_user_timezone(db_session, user_id)
-    local_date = cast(
-        func.coalesce(
-            self.model.recorded_at + cast(self.model.zone_offset, Interval),
-            func.timezone(user_tz, self.model.recorded_at),
-        ),
-        Date,
-    )
-
-    def prefer_daily_sum(series_id: int) -> ColumnElement:
-        """Per (day, source): use the daily-total rows if any exist, else sum samples.
-
-        Removes the Garmin/Suunto double-count (a daily total + its own intraday
-        epochs). NULL is_daily_total counts as "not daily" (legacy rows are summed).
-        COALESCE falls through to the sample sum only when no daily total exists.
-        """
-        daily = func.sum(
-            case(
-                (
-                    and_(self.model.series_type_definition_id == series_id, self.model.is_daily_total.is_(True)),
-                    self.model.value,
-                )
-            )
-        )
-        samples = func.sum(
-            case(
-                (
-                    and_(self.model.series_type_definition_id == series_id, self.model.is_daily_total.isnot(True)),
-                    self.model.value,
-                )
-            )
-        )
-        return func.coalesce(daily, samples)
-
-    # Build aggregation query
-    results = (
-        db_session.query(
-            local_date.label("activity_date"),
-            DataSource.provider.label("provider"),
-            DataSource.source.label("source"),
-            DataSource.device_model.label("device_model"),
-            # device_type is functionally dependent on the three columns above
-            # (uq_data_source_identity is unique per user on provider/device_model/source),
-            # so adding it to the GROUP BY cannot change the number of groups.
-            DataSource.device_type.label("device_type"),
-            # Steps - prefer daily total, else sum samples
-            prefer_daily_sum(steps_id).label("steps_sum"),
-            # Active energy - prefer daily total, else sum samples
-            prefer_daily_sum(energy_id).label("active_energy_sum"),
-            # Basal energy - prefer daily total, else sum samples
-            prefer_daily_sum(basal_energy_id).label("basal_energy_sum"),
-            # Total energy - providers that report active + basal without a split
-            prefer_daily_sum(total_energy_id).label("total_energy_sum"),
-            # Heart rate stats
-            func.avg(case((self.model.series_type_definition_id == hr_id, self.model.value), else_=None)).label(
-                "hr_avg"
-            ),
-            func.max(case((self.model.series_type_definition_id == hr_id, self.model.value), else_=None)).label(
-                "hr_max"
-            ),
-            func.min(case((self.model.series_type_definition_id == hr_id, self.model.value), else_=None)).label(
-                "hr_min"
-            ),
-            # Distance - prefer daily total, else sum samples (NULL when no data)
-            prefer_daily_sum(distance_id).label("distance_sum"),
-            # Flights climbed - prefer daily total, else sum samples (NULL when no data)
-            prefer_daily_sum(flights_id).label("flights_climbed_sum"),
-            # Provider-reported active time (minutes) - daily total (NULL when no data)
-            prefer_daily_sum(active_time_id).label("active_time_sum"),
-        )
-        .join(DataSource, self.model.data_source_id == DataSource.id)
-        .filter(
-            DataSource.user_id == user_id,
-            *self._local_day_window(local_date, start_date, end_date),
-            self.model.series_type_definition_id.in_(
-                [
-                    steps_id,
-                    energy_id,
-                    basal_energy_id,
-                    total_energy_id,
-                    hr_id,
-                    distance_id,
-                    flights_id,
-                    active_time_id,
-                ]
-            ),
-        )
-        .group_by(
-            local_date,
-            DataSource.provider,
-            DataSource.source,
-            DataSource.device_model,
-            DataSource.device_type,
-        )
-        .order_by(asc(local_date))
-        .all()
-    )
-
-    # Transform to list of dicts
-    aggregates: list[ActivityAggregateResult] = []
-    for row in results:
-        aggregates.append(
-            {
-                "activity_date": row.activity_date,
-                "provider": row.provider,
-                "source": row.source,
-                "device_model": row.device_model,
-                "device_type": row.device_type,
-                "steps_sum": int(row.steps_sum) if row.steps_sum is not None else None,
-                "active_energy_sum": float(row.active_energy_sum) if row.active_energy_sum is not None else None,
-                "basal_energy_sum": float(row.basal_energy_sum) if row.basal_energy_sum is not None else None,
-                "total_energy_sum": float(row.total_energy_sum) if row.total_energy_sum is not None else None,
-                "hr_avg": int(round(float(row.hr_avg))) if row.hr_avg is not None else None,
-                "hr_max": int(row.hr_max) if row.hr_max is not None else None,
-                "hr_min": int(row.hr_min) if row.hr_min is not None else None,
-                "distance_sum": float(row.distance_sum) if row.distance_sum is not None else None,
-                "flights_climbed_sum": int(row.flights_climbed_sum) if row.flights_climbed_sum is not None else None,
-                "active_time_minutes": int(row.active_time_sum) if row.active_time_sum is not None else None,
-            }
-        )
-    return aggregates
 
 
 # ---------------------------------------------------------------------------
@@ -501,12 +352,11 @@ def get_daily_intensity_minutes(
 
 
 def install() -> None:
-    """Replace the three daily-aggregation methods on DataPointSeriesRepository."""
+    """Replace the two daily minutes methods on DataPointSeriesRepository."""
     import sys  # noqa: PLC0415
 
     import app.repositories.data_point_series_repository  # noqa: F401, PLC0415
 
     repo_module = sys.modules["app.repositories.data_point_series_repository"]
-    repo_module.DataPointSeriesRepository.get_daily_activity_aggregates = get_daily_activity_aggregates
     repo_module.DataPointSeriesRepository.get_daily_active_minutes = get_daily_active_minutes
     repo_module.DataPointSeriesRepository.get_daily_intensity_minutes = get_daily_intensity_minutes
