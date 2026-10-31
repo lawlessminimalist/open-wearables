@@ -236,7 +236,7 @@ specific gaps to compensate for manually:
 
 | Thing | Where |
 |---|---|
-| `garmin_connect` provider (credential-based Garmin scraper) | `backend/app/services/providers/garmin_connect/` |
+| `garmin_connect` provider (Garmin Personal API, per-user keys) | `backend/app/services/providers/garmin_connect/` |
 | Patch system | `ow-patches/` |
 | Image overlay | `Dockerfile.ow-patches` |
 | GHCR publishing | `.github/workflows/publish-ghcr.yml` |
@@ -255,17 +255,13 @@ adding a health metric to a dashboard or setting a target on one — several
 prominent wearable numbers (Body Battery, readiness scores, fitness age, SpO2,
 deep-sleep minutes) have no validation behind them at all.
 
-### `garmin_connect` request budget
+### `garmin_connect` and the Personal API
 
-It authenticates by scraping Garmin Connect with real credentials; there is no
-official API for personal use (Garmin's Health API is a B2B integration). Every
-request counts:
-
-- Login is the rate-limited endpoint. The session token store is persisted on a
-  PVC so restarts do not force re-authentication.
-- A restored session must have `display_name` hydrated before use — `client.load()`
-  authenticates but leaves it `None`, and several endpoints interpolate it into
-  their URL.
-- Rate limits and account locks are recorded in Redis
-  (`garmin_connect:rate_limit_cooldown`) with an escalating backoff, and the sync
-  aborts the whole run rather than retrying per date.
+Since 2026-11-01 `garmin_connect` uses Garmin's Personal API instead of scraping a
+login. Each user's own key is stored Fernet-encrypted with `MASTER_KEY` on their
+`UserConnection` (`credentials.py`), exchanged for a 24-hour bearer per sync, and bound
+for that user's run through a context variable (`client.bound`), so one strategy serves
+every user. The key is linked from the pairing page through a public route, the same
+trust model as upstream's OAuth authorize. A 429 aborts the run rather than retrying per
+date; the request budget is unpublished. VO2max, intraday stress and body composition are
+not served by the Personal API.

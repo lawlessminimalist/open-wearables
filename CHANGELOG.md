@@ -2,6 +2,12 @@
 
 Dated entries, newest first, describing what moved and why so the next session can read this before exploring. Upstream has no CHANGELOG.md, so this file is fork-owned and never conflicts. Entries stay short; the reasoning lives in the linked files.
 
+## 2026-11-01
+
+The 2026-10-31 reconcile and the no-attribution enforcement landed (#21, #22) and the new image (`sha-3082662`) is live. Upstream's aggregates migrations ran cleanly on production; the history backfill copied all 504 `garmin_connect` daily totals (93 days) through the fork's new history rule, and Ultrahuman days now key to the local date. No pre-migration backup existed: the homelab push happened before the dump, so `~/ow-post-8adb8d0b-migration-2026-11-01.dump` is a post-migration copy.
+
+`garmin_connect` moved to Garmin's Personal API on `feat/garmin-personal-api`. Each user pastes their own key on their pairing link; it is checked with Garmin, stored Fernet-encrypted with `MASTER_KEY`, and exchanged for a 24-hour bearer per sync, with the sync binding a per-user client so one strategy serves every user. The `garminconnect` dependency, the email/password/token-store settings, the login, session restore, re-auth and Redis cooldown are gone. VO2max, intraday stress and body composition are not served by the Personal API and are no longer fetched. Deploying needs `MASTER_KEY` set first (TODO.md).
+
 ## 2026-10-31
 
 The reconcile onto upstream 8adb8d0b (d18304f8..8adb8d0b, 52 commits) is on `reconcile/upstream-2026-10-31`. Upstream's aggregates series (#1930 to #1941) renamed `data_point_series` to `series_sample`, moved day and session values into `series_aggregate` and `event_record_aggregate`, and rebuilt activity and sleep summaries on a rollup; #1877 dedupes health scores per day by source priority and #1953 stores unreported sleep stages as null. Only `pyproject.toml` and `uv.lock` conflicted (`garminconnect` re-pinned at 0.3.7), and an empty merge revision `1c2d3e4f5a6b` joins the fork head to upstream's health-score migration.

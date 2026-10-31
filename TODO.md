@@ -7,9 +7,8 @@ Open work for this fork, kept current as work lands. Read it at session start. F
 - Withings blood pressure never reaches the dashboard. Ingestion is fine (systolic and diastolic rows exist daily, paired by `external_id`), but the old React body section asked `/summaries/body` with `latest_window_hours: 4`, the route caps it at 24, and the cuff is used once a day. The React dashboard is gone since upstream 0.10.0; re-check the SvelteKit body view (`frontend/src/lib/body/`, `components/body/`) before fixing, then either fetch the systolic/diastolic timeseries over the selected period or add a windowless latest-pair lookup to `get_body_summary` as a registered patch.
 - `User.timezone` is never validated as an IANA name, so a typo would make every summary request for that user fail through `func.timezone`. Add a `ZoneInfo` validator on the user write schemas or a UTC fallback in `_resolve_user_timezone`.
 - `archival_repository` buckets archived days in UTC while live rows use the user-local date, so the archive and live merge keys will disagree once archival is enabled.
-- A chained historical sync does not stop after a Garmin rate limit. Chunks two onwards each fail the cooldown pre-flight, emit their own failed run and `sync.failed` webhook, and the skipped windows are never re-queued.
-- The synchronous sync route has no handler for `GarminConnectClientError`, so a cooldown surfaces as an unhandled 500.
-- The outer retry in `_call_with_reauth` stacks on garminconnect's own three retries for transient errors, up to nine requests per pair during an outage.
+- A chained historical sync does not stop after a Garmin rate limit: with the Redis cooldown gone (2026-11-01), each later chunk calls Garmin again and fails on its own 429, emitting its own failed run and `sync.failed` webhook, and the skipped windows are never re-queued.
+- The synchronous sync route has no handler for `GarminConnectClientError`, so a user with no linked Garmin key, a revoked key or a 429 surfaces as an unhandled 500.
 - The `task_id` stamped by `_current_task_id()` in the sync task is consumed by nothing; wire it into cancel or liveness, or drop the delta.
 - `create_workout_with_detail` in `event_record_service.py` is an unregistered direct edit to an upstream file; register it as structural or move it under `garmin_connect/`.
 
@@ -26,7 +25,7 @@ Upstream replaced the React dashboard; the fork's React edits were dropped at th
 
 - Display timezone: the portal formats every datetime with `timeZone: 'UTC'` (`src/lib/utils/format.ts`, `src/lib/syncs/format.ts`, `src/lib/charts/ticks.ts`). Render in the viewed user's `User.timezone` (echoed on sleep and activity summaries by the backend patches), with an optional per-viewer override.
 - `User.timezone` field on the user edit form (the API accepts it on PATCH `/users/{id}`).
-- Credential-provider connect (superseded by the Garmin Personal API work below): the portal lists only `has_cloud_api` providers for pairing, so `garmin_connect` can only be connected with `POST /api/v1/users/{user_id}/connections/garmin_connect`. The old providers tab also showed credential providers in their own section.
+- Credential-provider connect (done by the Garmin Personal API work below; drop this item when it lands): the portal lists only `has_cloud_api` providers for pairing, so `garmin_connect` can only be connected with `POST /api/v1/users/{user_id}/connections/garmin_connect`. The old providers tab also showed credential providers in their own section.
 - `basal_calories_kcal` on the activity view.
 
 ## Tooling
@@ -40,7 +39,7 @@ Upstream replaced the React dashboard; the fork's React edits were dropped at th
 - Wire `.pre-commit-config.yaml` per clone and add the language-agnostic gate rules for `.env` files, database files, size caps and binary magic bytes.
 - The podman/krunkit fix recorded on 2026-09-20 (`brew trust libkrun/krun && brew install krunkit`) was never applied on this machine, yet `podman machine start` and the full backend suite ran clean on 2026-09-22. The root cause of the original `krunkit exited unexpectedly with exit code 2` is unconfirmed, so if it recurs here or on another clone, apply that fix rather than assuming it is permanently resolved.
 
-## Garmin Personal API (in progress on `feat/garmin-personal-api`)
+## Garmin Personal API (implemented on `feat/garmin-personal-api`, not yet deployed)
 
 Replace the `garminconnect` login with Garmin's Personal API so each user links their own Garmin account from the pairing link. Decided 2026-11-01: keys are Fernet-encrypted with `MASTER_KEY` (not set in production yet; set it before deploying, and refuse to store a key without it), and the endpoints the Personal API lacks are accepted as lost.
 
@@ -50,7 +49,9 @@ Replace the `garminconnect` login with Garmin's Personal API so each user links 
 - Linking: a public endpoint the pairing page posts a key to (same trust model as upstream's public OAuth authorize), validated by a token exchange before it is stored; the pairing page lists `garmin_connect` with a key field.
 - Endpoint mapping (probe 2026-10-31): unchanged paths for heart rate, daily stats, HRV, activity list and details; `sleep-service/sleep/dailySleep` for sleep; body-battery report for body battery. Dropped (404): VO2max, intraday stress, body composition. Device model (404 on `mylastused`) is reused from the user's existing garmin_connect data source, so history is not split into a second source.
 - Delete: the `garminconnect` dependency and pin, email/password/token-store settings, login, session restore, re-auth, MFA and the Redis cooldown.
-- Still to verify against the live API: whether `dailySleep` carries a stage timeline, the FIT download with a binary Accept, and history depth.
+- Before deploying: set `MASTER_KEY` in the `open-wearables-env` Secret (kubectl patch, never apply; homelab `k8s/manifests/README.md`), then paste your own key on your pairing link, since the existing connection has no key and syncing stops until it does.
+- Still to verify against the live API: whether `dailySleep` carries a stage timeline (without one, sleep keeps stage totals but no hypnogram), the FIT download with a binary Accept, history depth, and that the activity search returns `deviceName` for a new user's device fallback.
+- Day-row duplicates: on 2026-10-31 Ultrahuman reported two different local midnights for the same day (`+10:00` and `+11:00`), giving two provider day rows for 2026-10-31. Check how `daily_activity` picks between them and whether the ring's timezone setting is the cause.
 
 ## Upstream candidates
 

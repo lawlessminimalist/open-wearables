@@ -4,6 +4,7 @@
 	import EmptyState from '$lib/components/ui/EmptyState.svelte';
 	import PairingShell from '$lib/components/pairing/PairingShell.svelte';
 	import ProviderChoice from '$lib/components/pairing/ProviderChoice.svelte';
+	import GarminKeyChoice from '$lib/components/pairing/GarminKeyChoice.svelte';
 	import type { ActionData, PageData } from './$types';
 
 	let { data, form }: { data: PageData; form: ActionData } = $props();
@@ -19,7 +20,7 @@
 			<Alert>{form.message}</Alert>
 		{/if}
 
-		{#if data.providers.length === 0}
+		{#if data.providers.length === 0 && data.keyProviders.length === 0}
 			<div class="rounded-xl border border-border bg-surface">
 				<EmptyState
 					icon={Unplug}
@@ -30,6 +31,10 @@
 		{:else}
 			{#each data.providers as provider (provider.provider)}
 				<ProviderChoice {provider} returnUrl={data.returnUrl} />
+			{/each}
+			<!-- FORK: key-paired providers (garmin_connect); see lib/server/garminKey.ts. -->
+			{#each data.keyProviders as provider (provider.provider)}
+				<GarminKeyChoice {provider} returnUrl={data.returnUrl} />
 			{/each}
 		{/if}
 	</div>
