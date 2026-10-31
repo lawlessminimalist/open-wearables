@@ -153,6 +153,7 @@ kubectl -n open-wearables exec deploy/app -- ls /root_project/ow-patches/apply.p
 - retire_when:               get_timeseries response for ultrahuman provider returns at least one record with type=oxygen_saturation or type=respiratory_rate when the user has data for those metrics.
 - upstream_equivalent_check: providers/ultrahuman/data_247.py::_RESPIRATORY_TYPES
 - rebased_note:              2026-10-31 vs upstream 8adb8d0b — REBASED. #1931 (4ff8f487) gave _save_daily_activity a `day: date | None = None` parameter that load_and_save_all passes positionally, and stamps daily scalars with period=CalendarPeriod.local_day(recorded_at). The four-arg copy raised TypeError on every day (swallowed per day by Sync247Run.step, so every Ultrahuman activity_samples step failed while sleep still saved). Re-applied the three fork deltas onto upstream's body. Daily scalars now live in series_aggregate only, so test_daily_scalar_series_carry_source reads that table. normalize_activity_samples and fix-hrv-source-unknown's _build_activity_samples were reported CHANGED only under system python3 3.15; under the backend venv (3.14) their hashes are unchanged.
+- review_note:               2026-10-31 adversarial review — FIXED. Upstream's live `period=CalendarPeriod.local_day(recorded_at)` keys every Ultrahuman day one date early east of UTC: day_start is the real local midnight (production: 13:00Z/14:00Z on the previous UTC date) and the offset defaults to +00:00. FORK DELTA 4 (`_ultrahuman_day`) takes the date 13 hours on and the offset that makes day_start its midnight, the same rule as upstream's history backfill (DayAnchor.LOCAL_MIDNIGHT_NO_OFFSET), so live and backfilled days agree. Upstream candidate (TODO.md).
 - local_patch_file:          ow-patches/local/fix-spo2-respiratory-missing.py
 
 ---
@@ -170,6 +171,7 @@ kubectl -n open-wearables exec deploy/app -- ls /root_project/ow-patches/apply.p
 - retire_when:               get_sleep_summary response.data[*].stages is always an object (never null/missing) when sleep records exist, AND ultrahuman sleep stages parse correctly when upstream returns them with the canonical type tokens.
 - upstream_equivalent_check: stage_aliases
 - rebased_note:              2026-10-31 vs upstream 8adb8d0b — REBASED (semantics, not hash). #1953 (95223ea6) stores unreported sleep stages as None instead of 0; normalize_sleep's wrapper overwrote stages with 0 for every unreported stage, failing upstream's test_save_sleep_keeps_unreported_stages_none and test_save_sleep_without_stages_takes_time_in_bed_as_total. Stages now start at None and become a number only when the response reports them. Both symbol hashes were unchanged, so check_upstream.py could not see this; upstream's own tests caught it.
+- review_note:               2026-10-31 adversarial review — FIXED two gaps the 2026-10-31 rebase left: spaced or hyphenated stage names ('Deep Sleep', 'rem-sleep') now normalise to the alias keys, and a reported stage with a null stage_time stays None instead of becoming 0 (a real 0 stays 0). Pinned by tests/providers/ultrahuman/test_ultrahuman_stages_patch.py.
 - local_patch_file:          ow-patches/local/fix-sleep-stages-missing.py
 
 ---
@@ -203,6 +205,7 @@ kubectl -n open-wearables exec deploy/app -- ls /root_project/ow-patches/apply.p
 - retire_when:               DataPointSeriesRepository.get_daily_active_minutes groups by user-local date (any of: AT TIME ZONE user.timezone, ZoneInfo-based bucketing, per-row zone_offset cast). Marker: any reference to `_local_date_bucket_expr` or equivalent timezone-aware bucketing helper in DataPointSeriesRepository.
 - upstream_equivalent_check: backend/app/repositories/data_point_series_repository.py::_local_date_bucket_expr
 - rebased_note:              2026-10-31 vs upstream 8adb8d0b — NARROWED. The aggregates rewrite (#1930-#1941) deleted get_daily_activity_aggregates; SummariesService reads day sums and heart rate from series_aggregate via daily_activity(), keyed by period_start + zone_offset with a NULL offset read as UTC (local_day.sample_day_sql, series_rollup _DAY_STATS, utils.dates.local_date), and never consults user.timezone. The patch was installing an attribute nothing called and its tests exercised that dead method, so the replacement and its tests are gone. get_daily_active_minutes and get_daily_intensity_minutes are still live (summaries_service.py:475,489) and their bodies match upstream except for local_date. ACCEPTED REGRESSION until the ingestion fix in TODO.md: for NULL-offset providers (garmin_connect, ultrahuman) day sums and heart rate bucket by UTC again, and minutes (user tz) can sit on a different card from steps (UTC) after a UTC-midnight crossing. tests/api/v1/test_timezone_bucketing.py marks the two day-sum cases strict xfail.
+- review_note:               2026-10-31 adversarial review — the reviewer recommended dropping the two minutes replacements so one summary card does not mix user-tz minutes with UTC day sums. Kept as decided for this reconcile (the user chose to keep them and defer the ingestion fix); the mixed-day effect is recorded in TODO.md and goes away with that fix.
 - local_patch_file:          ow-patches/local/fix-activity-summary-utc-bucketing.py
 
 ---
@@ -236,6 +239,7 @@ kubectl -n open-wearables exec deploy/app -- ls /root_project/ow-patches/apply.p
 - retire_when:               EventRecordRepository.get_sleep_summaries falls back to a non-UTC source when zone_offset is null (i.e. uses user.timezone or any other timezone-aware mechanism for the wake-date bucket).
 - upstream_equivalent_check: backend/app/repositories/event_record_repository.py::func.timezone
 - rebased_note:              2026-10-31 vs upstream 8adb8d0b — REBASED. #1930 renamed DataPointSeries to SeriesSample, so the patch's `from app.models import DataPointSeries` raised ImportError at app import (apply_patches re-raises), taking the whole backend down. Both bodies rebuilt from upstream's: _get_sleep_sessions returns (sessions_by_key, main_sleeps_by_key) and get_sleep_summaries merges self._sleep_physiology(...) instead of the old #1259 LATERAL. Only the user-timezone local_sleep_date coalesce is re-applied. retire_when NOT met: every upstream sleep day key still reads a NULL offset as UTC. Consider-also recorded in TODO.md: night_values (scores) and winning_sleep_record_ids (sessions dedupe) still key UTC, so for NULL-offset providers east of UTC scores sit one local day earlier than the summary.
+- review_note:               2026-10-31 adversarial review — upstream's private `_SLEEP_PHYSIOLOGY` is now looked up at call time instead of imported at module level, so an upstream rename fails a request (and the sleep tests) rather than the app boot. Not acted on: _resolve_user_timezone runs twice per request (here and in _get_sleep_sessions) and is copied in three patches; recorded in TODO.md.
 - local_patch_file:          ow-patches/local/fix-sleep-summary-utc-bucketing.py
 
 ---
@@ -362,6 +366,23 @@ kubectl -n open-wearables exec deploy/app -- ls /root_project/ow-patches/apply.p
 - structural_note:           One-line edit to an upstream file; conflicts if upstream touches the `validate` job header, which is intended. Candidate upstream contribution (forks hit this generically) — but open it from a clean upstream clone, never from this checkout (see FORK.md section 5 / the block-upstream-pr hook).
 - retire_when:               Upstream gates publish-images.yml on its own repository (any `github.repository`/`repository_owner` condition on the publish jobs), or moves the schedule trigger somewhere forks do not inherit.
 - upstream_equivalent_check: .github/workflows/publish-images.yml::repository_owner
+
+## garmin-connect-history-rule
+
+- patch_id:                  garmin-connect-history-rule
+- status:                    local_only
+- replacement_kind:          structural
+- upstream_url:              https://github.com/the-momentum/open-wearables
+- file:                      backend/app/constants/series_types/history_rules.py
+- symbol:                    HISTORY_RULES
+- what_we_changed:           Added a HistoryRule for ProviderName.GARMIN_CONNECT covering its daily totals (steps, active and basal energy, floors, distance, exercise_time; where is_daily_total IS TRUE) with DayAnchor.UTC_DATE, after upstream's Garmin rules.
+- why:                       2026-10-31: upstream's rollup skips is_daily_total samples and the live mirror only copies samples with a period, so garmin_connect daily totals written before that reconcile would vanish from activity summaries. garmin_connect stores each total at 00:00 UTC of Garmin's own calendar date, which is what UTC_DATE reads. This replaces a full historical re-sync through the rate-limited login. tests/providers/garmin_connect/test_garmin_connect_aggregates.py fails without the rule.
+- structural_note:           One tuple entry in an upstream file; conflicts when upstream edits the neighbouring Garmin rules, which is intended. HISTORY_RULES is read at import of aggregate_backfill_repository, so a runtime patch would be order-dependent.
+- retire_when:               Never while garmin_connect is fork-only; drop with the provider (or once every garmin_connect history row has been backfilled and the provider stops writing period-less totals).
+- upstream_equivalent_check: backend/app/constants/series_types/history_rules.py::GARMIN_CONNECT
+- local_patch_file:          null (direct source edit, marked FORK in the file)
+
+---
 
 ## garmin-connect-default-priority
 
