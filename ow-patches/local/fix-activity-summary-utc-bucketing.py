@@ -106,7 +106,7 @@ def _resolve_user_timezone(db_session: DbSession, user_id: UUID) -> str:
 
 
 # ---------------------------------------------------------------------------
-# get_daily_activity_aggregates
+# get_daily_active_minutes
 # ---------------------------------------------------------------------------
 
 

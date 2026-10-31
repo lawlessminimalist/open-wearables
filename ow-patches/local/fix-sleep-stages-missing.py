@@ -20,6 +20,7 @@ the (2) change is delivered by apply.py wrapping upstream's method and calling
 ensure_stages_object() on each summary — see _compose_sleep_summaries().
 """
 
+import re
 from collections.abc import Callable
 from typing import Any
 from uuid import UUID
@@ -66,10 +67,16 @@ def normalize_sleep(self, raw_sleep: dict[str, Any], user_id: UUID) -> dict[str,
         raw_type = entry.get("type")
         if not raw_type:
             continue
-        canonical = _STAGE_ALIASES.get(str(raw_type).strip().lower())
+        # "Deep Sleep" / "deep-sleep" -> "deep_sleep", so spaced and hyphenated spellings match too.
+        canonical = _STAGE_ALIASES.get(re.sub(r"[\s-]+", "_", str(raw_type).strip().lower()))
         if not canonical:
             continue
-        seconds = entry.get("stage_time") or entry.get("duration") or 0
+        # A real 0 stays 0; a reported stage with no time stays unknown (None), as upstream #1953.
+        seconds = entry.get("stage_time")
+        if seconds is None:
+            seconds = entry.get("duration")
+        if seconds is None:
+            continue
         try:
             stage_seconds[canonical] = (stage_seconds[canonical] or 0) + int(seconds)
         except (TypeError, ValueError):

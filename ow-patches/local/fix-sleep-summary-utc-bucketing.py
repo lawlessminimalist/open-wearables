@@ -87,10 +87,22 @@ from sqlalchemy import Date, Integer, Interval, String, and_, asc, case, cast, d
 
 from app.database import DbSession
 from app.models import DataSource, EventRecord, SleepDetails
-from app.repositories.event_record_repository import _SLEEP_PHYSIOLOGY
 from app.repositories.repositories import source_priority_order
 from app.schemas.enums import DeviceType, EventCategory, ProviderName
 from app.utils.pagination import decode_cursor
+
+
+def _upstream_sleep_physiology_keys() -> dict:
+    """Upstream's private _SLEEP_PHYSIOLOGY, looked up at call time.
+
+    A module-level import of a private upstream name turns an upstream rename into an
+    ImportError at app boot (apply_patches re-raises), the failure the 2026-10-31 rebase
+    fixed for DataPointSeries. Looked up lazily, a rename fails only the request, and
+    the sleep-summary tests catch it.
+    """
+    import sys  # noqa: PLC0415
+
+    return sys.modules["app.repositories.event_record_repository"]._SLEEP_PHYSIOLOGY
 
 
 def _resolve_user_timezone(db_session: DbSession, user_id: UUID) -> str:
@@ -327,7 +339,7 @@ def get_sleep_summaries(
             summary["device_model"],
         )
         summary["sessions"] = sessions_by_key.get(key, [])
-        summary.update(physiology.get(key, dict.fromkeys(_SLEEP_PHYSIOLOGY)))
+        summary.update(physiology.get(key, dict.fromkeys(_upstream_sleep_physiology_keys())))
 
     return summaries
 

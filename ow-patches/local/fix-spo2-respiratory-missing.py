@@ -38,12 +38,17 @@ the 1day/1week/1month timeseries and summaries rollup read. The four-arg copy
 raised TypeError on every day, swallowed by Sync247Run.step, so every Ultrahuman
 activity_samples step would have failed after the merge.
 
+Also 2026-10-31 (adversarial review): upstream's `period=local_day(recorded_at)`
+keys every Ultrahuman day one date early east of UTC, because day_start is the
+real local midnight and the offset defaults to +00:00. FORK DELTA 4 derives the
+offset the way upstream's history backfill does (the date 13 hours on).
+
 Composes with fix-hrv-source-unknown, which owns _build_activity_samples
 (adds `source=` to the intraday rows built from these buckets).
 """
 
 from collections.abc import Callable
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
@@ -54,6 +59,23 @@ from app.schemas.enums import daily_total_flag
 from app.schemas.model_crud.activities.data_point_series import CalendarPeriod, TimeSeriesSampleCreate
 from app.services.providers.ultrahuman.coverage import DAILY_SCALAR_SERIES
 from app.services.timeseries_service import timeseries_service
+
+
+def _ultrahuman_day(day_start: datetime) -> CalendarPeriod:
+    """The day an Ultrahuman day_start_timestamp opens, with the offset that makes it local midnight.
+
+    day_start is the user's real local midnight as a UTC instant (production shows 13:00Z and
+    14:00Z on the previous UTC date for +11:00 and +10:00), and the payload carries no offset.
+    The day is the date 13 hours on, the same rule as upstream's history backfill
+    (DayAnchor.LOCAL_MIDNIGHT_NO_OFFSET), so new syncs and backfilled history agree.
+    """
+    day = (day_start + timedelta(hours=13)).date()
+    offset = datetime.combine(day, time(), tzinfo=timezone.utc) - day_start
+    minutes = int(offset.total_seconds() // 60)
+    sign = "-" if minutes < 0 else "+"
+    hh, mm = divmod(abs(minutes), 60)
+    return CalendarPeriod.local_day(day_start, zone_offset=f"{sign}{hh:02d}:{mm:02d}")
+
 
 # Type tokens the Ultrahuman partner API has used for these metrics.
 _SPO2_TYPES = ("spo2", "oxygen_saturation", "blood_oxygen")
@@ -167,7 +189,9 @@ def _save_daily_activity(
                 value=Decimal(str(value)),
                 series_type=series_type,
                 is_daily_total=daily_total_flag(series_type, True),
-                period=CalendarPeriod.local_day(recorded_at),
+                # FORK DELTA 4: upstream's local_day(recorded_at) keeps a +00:00 offset, so a
+                # day starting at local midnight east of UTC keys to the previous date.
+                period=_ultrahuman_day(recorded_at),
             )
         )
 
