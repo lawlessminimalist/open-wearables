@@ -243,15 +243,16 @@ kubectl -n open-wearables exec deploy/app -- ls /root_project/ow-patches/apply.p
 ## fix-health-score-source-priority
 
 - patch_id:                  fix-health-score-source-priority
-- status:                    local_only
+- status:                    retired
 - upstream_url:              https://github.com/the-momentum/open-wearables
 - upstream_issue_or_pr:      null
-- file:                      backend/app/repositories/health_score_repository.py, backend/app/models/health_score.py
+- file:                      backend/app/repositories/health_score_repository.py
 - symbol:                    HealthScoreRepository.get_with_filters
 - what_we_changed:           When `fill_missing_sleep_scores_task` finds two sleep records for the same night (Garmin + Ultrahuman), it persists two `provider='internal'` scores — one per underlying sleep_record_id. Dedupe at read time: group by (local-date in user.timezone, category), keep the score whose underlying sleep record has the highest-priority source. Resilience/recovery scores without a sleep_record_id pass through untouched. Pagination applied after dedup so total_count reflects what consumers see. No-op when caller filters by `provider`.
 - retire_when:               HealthScoreRepository.get_with_filters returns at most one score per (local-date, category) when multiple providers have records for the same night, OR upstream offers an explicit dedupe option.
 - upstream_equivalent_check: backend/app/repositories/health_score_repository.py::provider_order
 - local_patch_file:          ow-patches/local/fix-health-score-source-priority.py
+- retirement_note:           2026-10-31: RETIRED onto upstream a72b05e4 (#1877). Upstream get_with_filters now ranks provider=internal scores per (category, UTC date of recorded_at) by the score's data_source (provider, device type, model, then longest sleep) in a row_number window before pagination; recorded_at is the local wake time stored as UTC, so the UTC date is the local date, and data_source_id is the underlying sleep record's source, so the Garmin + Ultrahuman double-score case is covered. retire_when met. The patch had to go regardless: the caller HealthScoreService.get_scores_with_filters now passes five args (adds provider_order, device_type_order) and unpacks (score, data_source) pairs, so the three-arg copy would raise TypeError on every call; the shadow and installed guards were green throughout. Accepted changes: a provider filter no longer skips the dedupe; pre-#1484 rows with null data_source_id rank last rather than by EventRecord.data_source (not verified against production); non-internal sleep scores are no longer collapsed (the patch wrongly collapsed SDK provider scores with the internal score). The registry previously listed models/health_score.py as a target; the patch never touched it. Flag False, removed from _STANDALONE_PATCHES, _EXPECTED_PATCHED and the column-drift table. Patch file kept for history.
 
 ---
 

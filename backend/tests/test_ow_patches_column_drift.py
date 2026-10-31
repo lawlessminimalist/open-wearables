@@ -63,12 +63,6 @@ _CASES: list[tuple[str, str, str, str]] = [
         "backend/app/repositories/event_record_repository.py",
         "_get_sleep_sessions",
     ),
-    (
-        "fix-health-score-source-priority.py",
-        "get_with_filters",
-        "backend/app/repositories/health_score_repository.py",
-        "get_with_filters",
-    ),
 ]
 
 
