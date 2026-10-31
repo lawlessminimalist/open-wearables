@@ -121,10 +121,10 @@ def test_daily_scalar_day_is_the_local_date_east_of_utc() -> None:
     spec.loader.exec_module(mod)
 
     for day_start, want_day, want_offset in [
-        (datetime(2026, 10, 30, 13, tzinfo=timezone.utc), "2026-10-31", "+11:00"),  # Sydney, summer
-        (datetime(2026, 10, 30, 14, tzinfo=timezone.utc), "2026-10-31", "+10:00"),  # Brisbane
+        (datetime(2026, 10, 30, 13, tzinfo=timezone.utc), "2026-10-31", "+11:00"),  # UTC+11
+        (datetime(2026, 10, 30, 14, tzinfo=timezone.utc), "2026-10-31", "+10:00"),  # UTC+10
         (datetime(2026, 10, 31, 0, tzinfo=timezone.utc), "2026-10-31", "+00:00"),  # UTC
-        (datetime(2026, 10, 31, 5, tzinfo=timezone.utc), "2026-10-31", "-05:00"),  # US Eastern
+        (datetime(2026, 10, 31, 5, tzinfo=timezone.utc), "2026-10-31", "-05:00"),  # UTC-5
     ]:
         period = mod._ultrahuman_day(day_start)
         local = period.start + timedelta(

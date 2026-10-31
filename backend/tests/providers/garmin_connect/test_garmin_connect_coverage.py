@@ -306,7 +306,7 @@ class TestSleepEpochSeries:
 
     def test_intraday_spo2_and_respiration_persisted(self, handler_factory: Any) -> None:
         h, captured = handler_factory()
-        out = h._build_sleep_epoch_samples(uuid4(), self._raw(), "EPIX Gen2")
+        out = h._build_sleep_epoch_samples(uuid4(), self._raw(), "Watch Model A")
         spo2 = [s for s in out if s.series_type is SeriesType.oxygen_saturation]
         resp = [s for s in out if s.series_type is SeriesType.respiratory_rate]
         # The 0 SpO2 and -1 respiration are Garmin's "not measured" sentinels.
@@ -324,9 +324,9 @@ class TestSleepEpochSeries:
     def test_device_model_is_stamped(self, handler_factory: Any) -> None:
         """Identity is (user_id, device_model, source) — omitting it splits the data source."""
         h, _ = handler_factory()
-        out = h._build_sleep_epoch_samples(uuid4(), self._raw(), "EPIX Gen2")
+        out = h._build_sleep_epoch_samples(uuid4(), self._raw(), "Watch Model A")
         assert out
-        assert all(s.device_model == "EPIX Gen2" for s in out)
+        assert all(s.device_model == "Watch Model A" for s in out)
 
 
 class TestPayloadKeysMatchReality:
@@ -377,7 +377,7 @@ class TestVo2maxLookback:
             return []
 
         def get_last_used_device_model(self) -> str | None:
-            return "EPIX Gen2"
+            return "Watch Model A"
 
     def _handler(self, monkeypatch: pytest.MonkeyPatch, client: Any):  # noqa: ANN202
         captured: list[Any] = []

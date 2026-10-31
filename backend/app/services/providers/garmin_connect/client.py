@@ -52,11 +52,51 @@ class GarminConnectClientError(Exception):
 
 
 class GarminConnectRateLimitError(GarminConnectClientError):
-    """Garmin answered 429: stop the run rather than hammer the endpoint."""
+    """Garmin answered 429, or the user is still cooling down from one: stop, do not retry.
+
+    `retry_after_seconds` is how long the user's cooldown has left. The sync task reads it
+    to re-queue a historical chunk for after the cooldown instead of losing the window.
+    """
+
+    def __init__(self, message: str, retry_after_seconds: int | None = None) -> None:
+        super().__init__(message)
+        self.retry_after_seconds = retry_after_seconds
+
+
+# Garmin publishes no Personal API rate limits and sends no Retry-After. A first historical
+# sync at full speed (12 chunks of 30 days, ~4 calls per day) was throttled within minutes on
+# 2026-10-31, so every key is paced to one request per interval.
+MIN_REQUEST_INTERVAL_SECONDS = 1.0
+# On a 429, wait and retry with these delays (about 7.5 minutes in all) before giving up.
+BACKOFF_SECONDS: tuple[int, ...] = (30, 60, 120, 240)
+_last_request_at: dict[int, float] = {}
+
+
+class _Throttled(Exception):  # noqa: N818 - internal signal, never escapes the client
+    """One 429 from Garmin; the backoff loop in GarminConnectClient._get decides what next."""
+
+
+def _sleep(seconds: float) -> None:
+    """Module-level so tests can skip the waits."""
+    import time  # noqa: PLC0415
+
+    time.sleep(seconds)
+
+
+def _pace(api_key: str) -> None:
+    """Sleep until MIN_REQUEST_INTERVAL_SECONDS has passed since this key's last request."""
+    import time  # noqa: PLC0415
+
+    slot = hash(api_key)
+    wait = _last_request_at.get(slot, 0.0) + MIN_REQUEST_INTERVAL_SECONDS - time.monotonic()
+    if wait > 0:
+        time.sleep(wait)
+    _last_request_at[slot] = time.monotonic()
 
 
 def exchange_api_key(api_key: str) -> tuple[str, datetime]:
     """Trade a Personal API key for a bearer token and its expiry. Raises GarminConnectClientError."""
+    _pace(api_key)
     try:
         response = httpx.post(
             BASE_URL + TOKEN_PATH,
@@ -99,6 +139,7 @@ class GarminConnectClient:
         device_model: str | None = None,
         on_new_bearer: Any = None,
         on_key_rejected: Any = None,
+        on_rate_limited: Any = None,
     ) -> None:
         self._api_key = api_key
         self._bearer = bearer
@@ -109,6 +150,8 @@ class GarminConnectClient:
         self._on_new_bearer = on_new_bearer
         # Called when Garmin rejects the key itself, so the connection can be marked expired.
         self._on_key_rejected = on_key_rejected
+        # Called on a 429; returns the cooldown in seconds it recorded for this user.
+        self._on_rate_limited = on_rate_limited
 
     # -- auth -----------------------------------------------------------------
     def _ensure_bearer(self, force: bool = False) -> str:
@@ -120,8 +163,8 @@ class GarminConnectClient:
         if force or not fresh:
             try:
                 self._bearer, self._bearer_expires_at = exchange_api_key(self._api_key)
-            except GarminConnectRateLimitError:
-                raise
+            except GarminConnectRateLimitError as exc:
+                raise _Throttled(str(exc)) from exc
             except GarminConnectClientError:
                 if self._on_key_rejected is not None:
                     self._on_key_rejected()
@@ -131,16 +174,42 @@ class GarminConnectClient:
         assert self._bearer is not None
         return self._bearer
 
+    def _rate_limited(self, message: str) -> GarminConnectRateLimitError:
+        """Record the user's cooldown (if a recorder is wired) and build the error carrying it."""
+        retry_after = self._on_rate_limited() if self._on_rate_limited is not None else None
+        return GarminConnectRateLimitError(message, retry_after_seconds=retry_after)
+
     def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
-        """GET a Connect path as JSON. 404 and 204 read as empty; 401 re-exchanges once."""
+        """GET a Connect path as JSON, backing off exponentially on 429.
+
+        After the last delay in BACKOFF_SECONDS the user's cooldown is recorded and
+        GarminConnectRateLimitError raised, so the rest of the sync stops instead of
+        waiting through the same cycle for every remaining request.
+        """
+        for delay in (*BACKOFF_SECONDS, None):
+            try:
+                return self._get_once(path, params)
+            except _Throttled:
+                if delay is None:
+                    raise self._rate_limited(f"Garmin rate-limited {path}") from None
+                log_structured(
+                    logger, "warning", "Garmin rate-limited; backing off", provider=_PROVIDER, path=path, wait_s=delay
+                )
+                _sleep(delay)
+        return None
+
+    def _get_once(self, path: str, params: dict[str, Any] | None) -> Any:
+        """One GET (two if a 401 forces a re-exchange). 404 and 204 read as empty; 429 is _Throttled."""
         for attempt in (1, 2):
+            bearer = self._ensure_bearer(attempt == 2)
+            _pace(self._api_key)
             try:
                 response = httpx.get(
                     BASE_URL + path,
                     params=params,
                     headers={
                         "Accept": "application/json",
-                        "Authorization": f"Bearer {self._ensure_bearer(attempt == 2)}",
+                        "Authorization": f"Bearer {bearer}",
                     },
                     timeout=_TIMEOUT,
                 )
@@ -156,7 +225,7 @@ class GarminConnectClient:
                     f"Garmin refused the bearer token (HTTP {response.status_code}); the API key may be revoked"
                 )
             if response.status_code == 429:
-                raise GarminConnectRateLimitError(f"Garmin rate-limited {path}")
+                raise _Throttled(path)
             if response.status_code in (204, 404) or not response.content:
                 return None
             if response.status_code >= 400:

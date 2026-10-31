@@ -64,8 +64,8 @@ from app.services.timeseries_service import timeseries_service
 def _ultrahuman_day(day_start: datetime) -> CalendarPeriod:
     """The day an Ultrahuman day_start_timestamp opens, with the offset that makes it local midnight.
 
-    day_start is the user's real local midnight as a UTC instant (production shows 13:00Z and
-    14:00Z on the previous UTC date for +11:00 and +10:00), and the payload carries no offset.
+    day_start is the user's real local midnight as a UTC instant (east of UTC that falls on the
+    previous UTC date), and the payload carries no offset.
     The day is the date 13 hours on, the same rule as upstream's history backfill
     (DayAnchor.LOCAL_MIDNIGHT_NO_OFFSET), so new syncs and backfilled history agree.
     """

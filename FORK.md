@@ -262,6 +262,9 @@ login. Each user's own key is stored Fernet-encrypted with `MASTER_KEY` on their
 `UserConnection` (`credentials.py`), exchanged for a 24-hour bearer per sync, and bound
 for that user's run through a context variable (`client.bound`), so one strategy serves
 every user. The key is linked from the pairing page through a public route, the same
-trust model as upstream's OAuth authorize. A 429 aborts the run rather than retrying per
-date; the request budget is unpublished. VO2max, intraday stress and body composition are
+trust model as upstream's OAuth authorize. Garmin publishes no limits and sends no
+Retry-After, so requests are paced to one per second per key, a 429 backs off
+exponentially (30, 60, 120, 240s), and only then records a per-user Redis cooldown
+(1h doubling to 24h) that makes the rest of the sync fail fast; a historical window
+skipped that way needs re-running. VO2max, intraday stress and body composition are
 not served by the Personal API.
