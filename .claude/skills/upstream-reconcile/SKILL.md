@@ -38,7 +38,7 @@ git merge upstream/main --no-edit
 
 Expect conflicts. Resolve them, then `git add` each file; a file stays listed as unmerged until staged even with no markers left. Read the conflict hunks with `grep -n '^<<<<<<<' <file>` and `sed -n` around them rather than the whole file.
 
-For the lockfiles, take upstream's copy and re-pin the fork-only dependencies rather than hand-merging: `git checkout --theirs -- backend/uv.lock && cd backend && uv lock -P garminconnect==<version production runs>`. The frontend lockfile (`frontend/bun.lock`) has no fork-only dependencies now; take upstream's, and `bun install --frozen-lockfile` in Phase 5 tells you if it did not.
+For the lockfiles, take upstream's copy rather than hand-merging: `git checkout --theirs -- backend/uv.lock && cd backend && uv lock`. The backend has had no fork-only dependencies since the 2026-11-01 switch to Garmin's Personal API removed `garminconnect`; if one is added again, re-pin it here with `uv lock -P <name>==<version production runs>`. The frontend lockfile (`frontend/bun.lock`) has no fork-only dependencies now; take upstream's, and `bun install --frozen-lockfile` in Phase 5 tells you if it did not.
 
 Commit the merge, then immediately run the two cheap checks that catch what the merge tool cannot, before spending anything on audits:
 

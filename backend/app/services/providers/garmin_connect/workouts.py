@@ -1,5 +1,7 @@
-"""Garmin Connect workouts handler using python-garminconnect."""
+"""Garmin Connect workouts handler, through the per-user Personal API client."""
 
+from collections.abc import Generator
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
@@ -17,6 +19,7 @@ from app.schemas.model_crud.activities import (
     TimeSeriesSampleCreate,
 )
 from app.services.event_record_service import event_record_service
+from app.services.providers.garmin_connect import client as garmin_client
 from app.services.providers.garmin_connect.client import GarminConnectClient
 from app.services.providers.garmin_connect.coverage import (
     ACTIVITY_SAMPLE_ALWAYS,
@@ -82,7 +85,7 @@ class GarminConnectWorkouts(BaseWorkoutsTemplate):
         connection_repo: UserConnectionRepository,
         provider_name: str,
         api_base_url: str,
-        client: GarminConnectClient,
+        client: GarminConnectClient | None = None,
     ) -> None:
         # oauth=None because garmin_connect bypasses OAuth entirely
         super().__init__(  # type: ignore[call-arg]
@@ -92,7 +95,7 @@ class GarminConnectWorkouts(BaseWorkoutsTemplate):
             api_base_url=api_base_url,
             oauth=None,  # ty: ignore[invalid-argument-type]
         )
-        self.client = client
+        self._client = client
 
     # -------------------------------------------------------------------------
     # API access
@@ -119,7 +122,25 @@ class GarminConnectWorkouts(BaseWorkoutsTemplate):
             )
             raise
 
+    @property
+    def client(self) -> GarminConnectClient:
+        """The injected client (tests), else the one bound for the user being synced."""
+        return self._client if self._client is not None else garmin_client.current()
+
+    @contextmanager
+    def _bound(self, db: DbSession, user_id: UUID) -> Generator[None, None, None]:
+        """Bind this user's Personal API client unless a client was injected."""
+        if self._client is not None:
+            yield
+            return
+        with garmin_client.bound(db, user_id):
+            yield
+
     def get_workouts_from_api(self, db: DbSession, user_id: UUID, **kwargs: Any) -> Any:
+        with self._bound(db, user_id):
+            return self._get_workouts_from_api(db, user_id, **kwargs)
+
+    def _get_workouts_from_api(self, db: DbSession, user_id: UUID, **kwargs: Any) -> Any:
         start_date_str = kwargs.get("start_date") or kwargs.get("startDate")
         end_date_str = kwargs.get("end_date") or kwargs.get("endDate")
 
@@ -377,6 +398,11 @@ class GarminConnectWorkouts(BaseWorkoutsTemplate):
         return len(samples)
 
     def load_data(self, db: DbSession, user_id: UUID, **kwargs: Any) -> int:
+        """Bind the user's Personal API client, then save workouts and their samples."""
+        with self._bound(db, user_id):
+            return self._load_data(db, user_id, **kwargs)
+
+    def _load_data(self, db: DbSession, user_id: UUID, **kwargs: Any) -> int:
         """Save workouts AND per-activity samples (see the module note above)."""
         from datetime import timedelta  # noqa: PLC0415
 

@@ -1026,6 +1026,61 @@
         }
       }
     },
+    "/api/v1/users/{user_id}/connections/garmin_connect/api-key": {
+      "post": {
+        "tags": [
+          "External: Connections",
+          "System: OAuth"
+        ],
+        "summary": "Link Garmin Personal Api Key",
+        "description": "Link a user's Garmin account with their own Garmin Personal API key (fork).\n\nPublic, like `GET /oauth/{provider}/authorize`: the pairing link is the credential, and\nthis is what its Garmin key field posts. The key is exchanged with Garmin before\nanything is stored, so a wrong or revoked key is rejected, and it is kept encrypted\nwith MASTER_KEY (see garmin_connect/credentials.py).",
+        "operationId": "link_garmin_personal_api_key_api_v1_users__user_id__connections_garmin_connect_api_key_post",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "User Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GarminApiKeyIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserConnectionWithCapabilities"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/users/{user_id}/connections/{provider}/data": {
       "delete": {
         "tags": [
@@ -13363,6 +13418,22 @@
           "extensions"
         ],
         "title": "ExtensionsResponse"
+      },
+      "GarminApiKeyIn": {
+        "properties": {
+          "api_key": {
+            "type": "string",
+            "maxLength": 1024,
+            "minLength": 8,
+            "title": "Api Key",
+            "description": "A Garmin Connect Personal API key"
+          }
+        },
+        "type": "object",
+        "required": [
+          "api_key"
+        ],
+        "title": "GarminApiKeyIn"
       },
       "HRZone": {
         "properties": {

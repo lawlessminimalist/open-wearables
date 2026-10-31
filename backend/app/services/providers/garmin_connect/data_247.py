@@ -1,8 +1,8 @@
 """Garmin Connect 24/7 data handler (sleep, HR, stress, steps, body comp, HRV)."""
 
 import logging
-from collections.abc import Callable
-from contextlib import suppress
+from collections.abc import Callable, Generator
+from contextlib import contextmanager, suppress
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from uuid import UUID, uuid4
@@ -59,7 +59,7 @@ class GarminConnect247Data(Base247DataTemplate):
         self,
         provider_name: str,
         api_base_url: str,
-        client: GarminConnectClient,
+        client: GarminConnectClient | None = None,
     ) -> None:
         # oauth=None because garmin_connect bypasses OAuth entirely (credential-based
         # provider). The template's signature requires BaseOAuthTemplate, hence the
@@ -69,10 +69,24 @@ class GarminConnect247Data(Base247DataTemplate):
             api_base_url=api_base_url,
             oauth=None,  # ty: ignore[invalid-argument-type]
         )
-        self.client = client
+        self._client = client
         self.event_record_repo = EventRecordRepository(EventRecord)
         self.connection_repo = UserConnectionRepository()
         self.logger = logging.getLogger(self.__class__.__name__)
+
+    @property
+    def client(self) -> GarminConnectClient:
+        """The injected client (tests), else the one bound for the user being synced."""
+        return self._client if self._client is not None else garmin_client.current()
+
+    @contextmanager
+    def _bound(self, db: DbSession, user_id: UUID) -> Generator[None, None, None]:
+        """Bind this user's Personal API client unless a client was injected."""
+        if self._client is not None:
+            yield
+            return
+        with garmin_client.bound(db, user_id):
+            yield
 
     # -------------------------------------------------------------------------
     # Abstract method stubs (not used; we override load_and_save_all instead)
@@ -729,6 +743,18 @@ class GarminConnect247Data(Base247DataTemplate):
         end_time: datetime | str | None = None,
         is_first_sync: bool = False,
     ) -> Sync247Result:
+        """Bind the user's Personal API client, then run the 24/7 sync."""
+        with self._bound(db, user_id):
+            return self._load_and_save_all(db, user_id, start_time, end_time, is_first_sync)
+
+    def _load_and_save_all(
+        self,
+        db: DbSession,
+        user_id: UUID,
+        start_time: datetime | str | None = None,
+        end_time: datetime | str | None = None,
+        is_first_sync: bool = False,
+    ) -> Sync247Result:
         """Load and save all 24/7 data types for the given date range.
 
         Aborts the whole run on the first ``GarminConnectClientError`` instead of
@@ -739,22 +765,6 @@ class GarminConnect247Data(Base247DataTemplate):
         malformed payload) are swallowed. Formerly the ow-patch
         fix-garmin-connect-rate-limit-backoff; retired into source 2026-09-13.
         """
-        # Module attribute (not a from-import) so the cooldown check can be
-        # monkeypatched in one place.
-        blocked = garmin_client.cooldown_remaining()
-        if blocked > 0:
-            log_structured(
-                self.logger,
-                "warning",
-                "Skipping Garmin Connect 24/7 sync: rate-limit cooldown active",
-                action="garmin_connect_sync_skipped_cooldown",
-                cooldown_remaining_seconds=blocked,
-                user_id=str(user_id),
-            )
-            raise GarminConnectRateLimitError(
-                f"Garmin Connect is in rate-limit cooldown for another {blocked}s; sync skipped"
-            )
-
         if isinstance(start_time, str):
             start_time = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
         if isinstance(end_time, str):

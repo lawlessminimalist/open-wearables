@@ -1,26 +1,23 @@
 """Garmin Connect provider strategy (credential-based, no OAuth)."""
 
 from app.services.providers.base_strategy import BaseProviderStrategy, ProviderCapabilities, ProviderCoverage
-from app.services.providers.garmin_connect.client import GarminConnectClient
 from app.services.providers.garmin_connect.coverage import SLEEP_FIELDS, TIMESERIES, WORKOUT_FIELDS
 from app.services.providers.garmin_connect.data_247 import GarminConnect247Data
 from app.services.providers.garmin_connect.workouts import GarminConnectWorkouts
 
 
 class GarminConnectStrategy(BaseProviderStrategy):
-    """Garmin Connect provider — pulls data via python-garminconnect.
+    """Garmin Connect provider through Garmin's Personal API.
 
-    Authentication uses Garmin Connect email/password (set via GARMIN_CONNECT_EMAIL
-    and GARMIN_CONNECT_PASSWORD environment variables). No OAuth dance is needed.
-    The provider stores session tokens at GARMIN_CONNECT_TOKEN_STORE so repeated
-    logins are avoided.
+    Each user links their own Personal API key from the pairing page; the key is stored
+    encrypted on their connection and exchanged for a bearer token per sync (see
+    client.py and credentials.py). No OAuth dance and no shared login.
     """
 
     def __init__(self) -> None:
         super().__init__()
 
         # Shared client used by both workouts and 247 handlers
-        client = GarminConnectClient()
 
         # oauth stays None — no cloud OAuth for this provider
         self.oauth = None
@@ -30,13 +27,11 @@ class GarminConnectStrategy(BaseProviderStrategy):
             connection_repo=self.connection_repo,
             provider_name=self.name,
             api_base_url=self.api_base_url,
-            client=client,
         )
 
         self.data_247 = GarminConnect247Data(
             provider_name=self.name,
             api_base_url=self.api_base_url,
-            client=client,
         )
 
     @property
