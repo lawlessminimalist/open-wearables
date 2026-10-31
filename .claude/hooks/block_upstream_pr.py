@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""PreToolUse(Bash) hook: nothing from this fork checkout may reach upstream's tracker.
+"""PreToolUse(Bash) hook: nothing from this fork checkout may reach upstream's tracker,
+and nothing it commits or publishes may carry AI attribution.
 
 Why: on 2026-09-13 `gh pr create` (no --repo) defaulted to the fork's PARENT and opened a
 fork-internal reconcile PR on the-momentum/open-wearables (#1611).
@@ -25,6 +26,13 @@ fine. Rules (deny = the tool call never runs):
   3. A mutating gh command — pr/issue/release write verbs, `gh repo` destructive verbs, or
      `gh api` with a mutating method or field — without an explicit fork target
      (--repo/-R <fork slug>, a positional <fork slug>, or repos/<fork slug> in the api path).
+  4. A git commit / merge / tag / notes, or a gh pr / issue / release write, whose text
+     carries AI attribution (a Claude Co-Authored-By trailer, the anthropic.com noreply
+     address, or "Generated with Claude Code"). The whole command is searched, heredoc
+     bodies included, and so is any file passed as -F / --file / --body-file / --notes-file.
+     Why: since 2026-10-19 the repo convention is no attribution; the harness injected
+     trailers into the 2026-10-31 reconcile anyway and the PR branch had to be rewritten.
+     .claude/settings.json `attribution` is the first layer and CI in ow-patches.yml the last.
 Fails CLOSED: any parse error denies rather than allows.
 """
 
@@ -35,6 +43,7 @@ import re
 import shlex
 import subprocess
 import sys
+from pathlib import Path
 
 FORK_FALLBACK = "lawlessminimalist/open-wearables"
 UPSTREAM_FALLBACK = "the-momentum/open-wearables"
@@ -47,6 +56,12 @@ REPO_WRITE_VERBS = {"delete", "edit", "rename", "archive", "unarchive", "sync"}
 WRAPPERS = {"env", "sudo", "time", "nohup", "nice", "command", "exec", "builtin"}
 SHELLS = {"bash", "sh", "zsh", "dash", "ksh"}
 ENV_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+ATTRIBUTION_RE = re.compile(
+    r"co-authored-by:[^\n]*\bclaude\b|noreply@anthropic\.com|generated with \[?claude code",
+    re.IGNORECASE,
+)
+GIT_MESSAGE_VERBS = {"commit", "merge", "tag", "notes"}
+MESSAGE_FILE_FLAGS = {"-F", "--file", "--body-file", "--notes-file"}
 
 
 def deny(reason: str) -> None:
@@ -162,7 +177,8 @@ def unwrap(tokens: list[str]) -> list[str]:
 
 
 class Checker:
-    def __init__(self) -> None:
+    def __init__(self, cwd: str = ".") -> None:
+        self.cwd = cwd
         self.fork = slug_of("origin") or FORK_FALLBACK
         upstream = slug_of("upstream")
         self.upstream = upstream if upstream and upstream != "no_push" else UPSTREAM_FALLBACK
@@ -232,6 +248,52 @@ class Checker:
             f"PRs/issues to the parent repo ({self.upstream}). Re-run with: --repo {self.fork}"
         )
 
+    @staticmethod
+    def git_subcommand(tokens: list[str]) -> tuple[int, str]:
+        """Index and name of git's subcommand, skipping global options like -C <dir>."""
+        i = 1
+        while i < len(tokens):
+            t = tokens[i]
+            if t in ("-C", "-c", "--git-dir", "--work-tree", "--namespace"):
+                i += 2
+                continue
+            if t.startswith("-"):
+                i += 1
+                continue
+            return i, t
+        return i, ""
+
+    def publishes_text(self, tokens: list[str]) -> bool:
+        """True when this segment writes a commit/tag message or a GitHub body."""
+        head = tokens[0]
+        if head == "git":
+            return self.git_subcommand(tokens)[1] in GIT_MESSAGE_VERBS
+        if head == "gh" and len(tokens) > 2:
+            return tokens[1] in ("pr", "issue", "release") and tokens[2] in WRITE_VERBS
+        return False
+
+    def check_attribution(self, full_text: str, tokens: list[str]) -> None:
+        texts = [full_text]
+        for i, t in enumerate(tokens):
+            path = None
+            if t in MESSAGE_FILE_FLAGS and i + 1 < len(tokens):
+                path = tokens[i + 1]
+            elif "=" in t and t.split("=", 1)[0] in MESSAGE_FILE_FLAGS:
+                path = t.split("=", 1)[1]
+            if path and path != "-":
+                try:
+                    texts.append((Path(self.cwd) / path).expanduser().read_text(errors="replace"))
+                except OSError:
+                    pass  # an unreadable file is git's or gh's error to report, not ours
+        for text in texts:
+            m = ATTRIBUTION_RE.search(text)
+            if m:
+                deny(
+                    f"Blocked: this commit or GitHub text carries AI attribution ({m.group(0)!r}). "
+                    "This repo's convention since 2026-10-19 is no Co-Authored-By trailer for Claude "
+                    "and no 'Generated with Claude Code' line. Remove it and re-run."
+                )
+
     def check_git(self, raw: str, tokens: list[str]) -> None:
         # find the subcommand: skip global options like -C <dir>, -c k=v, --git-dir=...
         i = 1
@@ -255,9 +317,11 @@ class Checker:
                 deny(f"Blocked: this pushes to {self.upstream}. Push to origin ({self.fork}) instead.")
 
     # -- driver --------------------------------------------------------------
-    def check_command(self, text: str, depth: int = 0) -> None:
+    def check_command(self, text: str, depth: int = 0, full_text: str | None = None) -> None:
         if depth > 4:
             return
+        # Attribution hides in heredoc bodies, so rule 4 searches the unstripped text.
+        full_text = text if full_text is None else full_text
         text = strip_heredocs(join_continuations(text))
         for raw in split_segments(text):
             tokens = unwrap(tokens_of(raw))
@@ -278,8 +342,10 @@ class Checker:
                             inner = tokens[j + 1]
                             break
                 if inner:
-                    self.check_command(inner, depth + 1)
+                    self.check_command(inner, depth + 1, full_text)
                 continue
+            if head in ("gh", "git") and self.publishes_text(tokens):
+                self.check_attribution(full_text, tokens)
             if head == "gh":
                 self.check_gh(raw, tokens)
             elif head == "git":
@@ -290,13 +356,14 @@ def main() -> None:
     try:
         payload = json.load(sys.stdin)
         cmd = (payload.get("tool_input") or {}).get("command") or ""
+        cwd = payload.get("cwd") or "."
     except Exception as exc:  # noqa: BLE001
         deny(f"block_upstream_pr.py could not read the hook input ({exc}); failing closed.")
         return
     if not cmd or ("gh" not in cmd and "git" not in cmd):
         return
     try:
-        Checker().check_command(cmd)
+        Checker(cwd).check_command(cmd)
     except SystemExit:
         raise
     except Exception as exc:  # noqa: BLE001

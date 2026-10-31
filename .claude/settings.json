@@ -4,6 +4,11 @@
     "OW_AGENT_METRICS_URL": "http://otel.lab.homelab-dhlaw.uk:30800/v1/metrics",
     "OW_AGENT_METRICS_FALLBACK_IP": "100.88.212.12"
   },
+  "attribution": {
+    "commit": "",
+    "pr": ""
+  },
+  "includeCoAuthoredBy": false,
   "hooks": {
     "PreToolUse": [
       {

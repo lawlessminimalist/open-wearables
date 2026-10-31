@@ -45,3 +45,18 @@ DENY|gh pr create --repo lawlessminimalist/open-wearables --body "see the-moment
 DENY|gh repo delete lawlessminimalist/other --yes
 ALLOW|gh repo view lawlessminimalist/open-wearables
 ALLOW|echo done
+# Rule 4: no AI attribution in commits or GitHub text
+DENY|git commit -m "fix: x" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+DENY|git commit --amend -m "fix: x" -m "co-authored-by: claude <someone@example.com>"
+DENY|git -C backend commit -m "x" -m "Co-Authored-By: Bot <noreply@anthropic.com>"
+DENY|gh pr create --repo lawlessminimalist/open-wearables --title x --body "🤖 Generated with [Claude Code](https://claude.com/claude-code)"
+DENY|gh pr edit 21 --repo lawlessminimalist/open-wearables --body "Generated with Claude Code"
+DENY|gh pr create --repo lawlessminimalist/open-wearables --title x --body-file .claude/hooks/cases/attributed_body.md
+DENY|git commit -F .claude/hooks/cases/attributed_body.md
+DENY|bash -c 'git commit -m "x" -m "Co-Authored-By: Claude <noreply@anthropic.com>"'
+ALLOW|git commit -m "fix: x" -m "Co-Authored-By: Jane Doe <jane@example.com>"
+ALLOW|git commit -m "docs: explain why commits drop Co-Authored-By trailers for Claude"
+ALLOW|gh pr create --repo lawlessminimalist/open-wearables --title x --body-file .claude/hooks/cases/clean_body.md
+ALLOW|git log --format=%B | grep -c 'Co-Authored-By: Claude'
+ALLOW|grep -rn 'noreply@anthropic.com' CHANGELOG.md
+ALLOW|gh pr view 21 --repo lawlessminimalist/open-wearables --json body
