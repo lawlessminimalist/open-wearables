@@ -401,6 +401,23 @@ kubectl -n open-wearables exec deploy/app -- ls /root_project/ow-patches/apply.p
 
 ---
 
+## fix-blood-pressure-fields
+
+- patch_id:                  fix-blood-pressure-fields
+- status:                    upstream_candidate
+- replacement_kind:          structural
+- upstream_url:              https://github.com/the-momentum/open-wearables
+- file:                      frontend/src/lib/body/types.ts, frontend/src/lib/body/metrics.ts, frontend/src/lib/body/body.spec.ts
+- symbol:                    BloodPressure type, bodyGroups blood pressure reading, BloodPressure contract test
+- what_we_changed:           The portal typed BloodPressure as `{ systolic, diastolic }`, but the API's `BloodPressure` (docs/openapi.json) sends `avg_systolic_mmhg`, `avg_diastolic_mmhg`, min/max and `reading_count`, so the body page's blood pressure reading was always empty. The type and `bodyGroups` now use the API fields, and a contract test checks the fixture's keys against the OpenAPI schema.
+- why:                       2026-11-01: blood pressure from a connected cuff never showed on the body page. Introduced upstream with the SvelteKit portal (8ce9aa99) and still present at 8adb8d0b; the upstream test used the frontend's assumed shape, so it passed. The body summary's separate 24-hour freshness window is upstream design and is not changed here.
+- structural_note:           Edits to three upstream files, marked FORK. Conflicts if upstream touches the body type or metrics, which is the cue to check whether it fixed the mapping.
+- retire_when:               Upstream's frontend/src/lib/body/types.ts types BloodPressure with the API's avg_systolic_mmhg / avg_diastolic_mmhg fields. Planned upstream PR from a clean clone after this is confirmed in production.
+- upstream_equivalent_check: frontend/src/lib/body/types.ts::avg_systolic_mmhg
+- local_patch_file:          null (direct source edits, marked FORK)
+
+---
+
 ## garmin-connect-default-priority
 
 - patch_id:                  garmin-connect-default-priority

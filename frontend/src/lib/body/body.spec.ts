@@ -1,6 +1,18 @@
 import { describe, expect, it } from 'vitest';
+import { openapi } from '$lib/testing/openapi';
 import { bodyGroups, composition } from './metrics';
-import type { BodySummary } from './types';
+import type { BloodPressure, BodySummary } from './types';
+
+/** A reading in the API's own shape; the contract test below keeps it honest. */
+const READING: BloodPressure = {
+	avg_systolic_mmhg: 118,
+	avg_diastolic_mmhg: 76,
+	max_systolic_mmhg: null,
+	max_diastolic_mmhg: null,
+	min_systolic_mmhg: null,
+	min_diastolic_mmhg: null,
+	reading_count: 1
+};
 
 const body = (over: Partial<BodySummary['slow_changing']> = {}, latest = {}, averaged = {}) =>
 	({
@@ -77,10 +89,19 @@ describe('bodyGroups', () => {
 	});
 
 	it('reads a blood pressure as one figure, or not at all', () => {
-		const withBp = bodyGroups(body({}, { blood_pressure: { systolic: 118, diastolic: 76 } }));
+		const withBp = bodyGroups(body({}, { blood_pressure: READING }));
 		expect(withBp.find((group) => group.title === 'Blood pressure')?.fields[0].value).toBe(
 			'118/76 mmHg'
 		);
 		expect(bodyGroups(body()).some((group) => group.title === 'Blood pressure')).toBe(false);
+	});
+});
+
+// FORK (fix-blood-pressure-fields): the fixture once used the shape the frontend wanted, not
+// the one the API sends, so the page rendered nothing while every test passed.
+describe('BloodPressure contract', () => {
+	it('matches the API schema in docs/openapi.json', () => {
+		const schema = openapi().components.schemas.BloodPressure as { properties: object };
+		expect(Object.keys(READING).sort()).toEqual(Object.keys(schema.properties).sort());
 	});
 });

@@ -20,7 +20,19 @@ export type Averaged = {
 	period_end: string;
 };
 
-export type BloodPressure = { systolic: number | null; diastolic: number | null };
+/**
+ * Mirrors the API's `BloodPressure`. FORK (fix-blood-pressure-fields): upstream typed this
+ * as `{ systolic, diastolic }`, which the API never sends, so every reading rendered empty.
+ */
+export type BloodPressure = {
+	avg_systolic_mmhg: number | null;
+	avg_diastolic_mmhg: number | null;
+	max_systolic_mmhg: number | null;
+	max_diastolic_mmhg: number | null;
+	min_systolic_mmhg: number | null;
+	min_diastolic_mmhg: number | null;
+	reading_count: number | null;
+};
 
 /**
  * Mirrors `BodyLatest`. Every field here is withheld unless it was measured

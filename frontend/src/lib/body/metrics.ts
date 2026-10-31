@@ -78,8 +78,8 @@ export function bodyGroups(body: BodySummary): FieldGroup[] {
 			[
 				[
 					'Reading',
-					latest.blood_pressure?.systolic && latest.blood_pressure?.diastolic
-						? `${Math.round(latest.blood_pressure.systolic)}/${Math.round(latest.blood_pressure.diastolic)} mmHg`
+					latest.blood_pressure?.avg_systolic_mmhg && latest.blood_pressure?.avg_diastolic_mmhg
+						? `${Math.round(latest.blood_pressure.avg_systolic_mmhg)}/${Math.round(latest.blood_pressure.avg_diastolic_mmhg)} mmHg`
 						: null
 				],
 				[
