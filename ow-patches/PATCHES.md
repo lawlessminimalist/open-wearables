@@ -384,6 +384,23 @@ kubectl -n open-wearables exec deploy/app -- ls /root_project/ow-patches/apply.p
 
 ---
 
+## garmin-personal-api-pairing
+
+- patch_id:                  garmin-personal-api-pairing
+- status:                    local_only
+- replacement_kind:          structural
+- upstream_url:              https://github.com/the-momentum/open-wearables
+- file:                      backend/app/api/routes/v1/connections.py, frontend/src/routes/users/[id]/pair/+page.server.ts, frontend/src/routes/users/[id]/pair/+page.svelte
+- symbol:                    link_garmin_personal_api_key, connect_credential_provider_endpoint, pair page load + garminKey action
+- what_we_changed:           A public `POST /users/{user_id}/connections/garmin_connect/api-key` that validates a Garmin Personal API key with Garmin and stores it encrypted; the fork's admin credential route now points garmin_connect at it. The pairing page loads key-paired providers (fork-owned lib/server/garminKey.ts) and renders a key card (fork-owned GarminKeyChoice.svelte) with a `garminKey` form action.
+- why:                       2026-11-01: garmin_connect moved to per-user Personal API keys so other household members can link their own Garmin accounts from the pairing link, as OAuth providers already do.
+- structural_note:           Small additions to three upstream files, each marked FORK; the logic lives in fork-owned files. Conflicts when upstream edits the pairing page or the connections routes, which is intended.
+- retire_when:               Never while garmin_connect is fork-only; drop with the provider.
+- upstream_equivalent_check: backend/app/api/routes/v1/connections.py::garmin_connect/api-key
+- local_patch_file:          null (direct source edits, marked FORK)
+
+---
+
 ## garmin-connect-default-priority
 
 - patch_id:                  garmin-connect-default-priority

@@ -2,6 +2,7 @@ import contextlib
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Response, status
+from pydantic import BaseModel, Field
 
 from app.database import DbSession
 from app.models import ProviderSetting
@@ -86,6 +87,12 @@ def connect_credential_provider_endpoint(
 
     Returns 400 if the provider uses OAuth (those connect via the OAuth authorize flow).
     """
+    if provider == ProviderName.GARMIN_CONNECT:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="garmin_connect needs the user's Garmin Personal API key: POST it to "
+            f"/api/v1/users/{user_id}/connections/garmin_connect/api-key.",
+        )
     strategy = factory.get_provider(provider.value)
     if strategy.oauth is not None:
         raise HTTPException(
@@ -96,6 +103,45 @@ def connect_credential_provider_endpoint(
     connection = user_connection_service.ensure_credential_connection(db, user_id, provider.value)
     settings_map = provider_settings_service.get_settings_map(db)
     return _with_capabilities(connection, settings_map)
+
+
+class GarminApiKeyIn(BaseModel):
+    api_key: str = Field(min_length=8, max_length=1024, description="A Garmin Connect Personal API key")
+
+
+@router.post(
+    "/users/{user_id}/connections/garmin_connect/api-key",
+    response_model=UserConnectionWithCapabilities,
+    tags=["System: OAuth"],
+)
+def link_garmin_personal_api_key(user_id: UUID, body: GarminApiKeyIn, db: DbSession):
+    """Link a user's Garmin account with their own Garmin Personal API key (fork).
+
+    Public, like `GET /oauth/{provider}/authorize`: the pairing link is the credential, and
+    this is what its Garmin key field posts. The key is exchanged with Garmin before
+    anything is stored, so a wrong or revoked key is rejected, and it is kept encrypted
+    with MASTER_KEY (see garmin_connect/credentials.py).
+    """
+    from app.services.providers.garmin_connect.client import (  # noqa: PLC0415
+        GarminConnectClientError,
+        GarminConnectRateLimitError,
+    )
+    from app.services.providers.garmin_connect.credentials import (  # noqa: PLC0415
+        MasterKeyMissingError,
+        store_api_key,
+    )
+    from app.services.user_service import user_service  # noqa: PLC0415
+
+    user_service.get(db, user_id, raise_404=True)
+    try:
+        connection = store_api_key(db, user_id, body.api_key)
+    except MasterKeyMissingError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    except GarminConnectRateLimitError as exc:
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(exc)) from exc
+    except GarminConnectClientError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return _with_capabilities(connection, provider_settings_service.get_settings_map(db))
 
 
 def _assert_sdk_token_may_disconnect(

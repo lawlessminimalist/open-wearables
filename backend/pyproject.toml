@@ -28,7 +28,6 @@ dependencies = [
     "svix>=2.8.0",
     "numpy>=2.5.4",
     "faker>=40.43.0",
-    "garminconnect>=0.2.22",
     "fitdecode>=0.11.0",
     "google-auth>=2.62.0",
     "packaging>=24",
