@@ -63,6 +63,10 @@ def garmin(monkeypatch: pytest.MonkeyPatch) -> _Garmin:
     fake = _Garmin()
     monkeypatch.setattr(garmin_client.httpx, "post", fake.post)
     monkeypatch.setattr(garmin_client.httpx, "get", fake.get)
+    # No real waiting: record the backoff delays instead, and turn pacing off.
+    fake.slept = []  # type: ignore[attr-defined]
+    monkeypatch.setattr(garmin_client, "_sleep", fake.slept.append)  # type: ignore[attr-defined]
+    monkeypatch.setattr(garmin_client, "MIN_REQUEST_INTERVAL_SECONDS", 0.0)
     return fake
 
 
@@ -100,13 +104,31 @@ class TestClientAuth:
         assert garmin.exchanges == 1
         assert garmin.bearers[0] == "Bearer stale" != garmin.bearers[1]
 
-    def test_429_raises_a_rate_limit_and_404_reads_as_empty(self, garmin: _Garmin) -> None:
-        c = GarminConnectClient("key", bearer="b", bearer_expires_at=datetime.now(timezone.utc) + timedelta(hours=5))
+    def test_404_reads_as_empty(self, garmin: _Garmin) -> None:
+        later = datetime.now(timezone.utc) + timedelta(hours=5)
+        c = GarminConnectClient("key", bearer="b", bearer_expires_at=later)
         garmin.get_statuses = [404]
         assert c.get_heart_rates(datetime.now(timezone.utc).date()) == {}
+
+    def test_429_backs_off_exponentially_then_succeeds(self, garmin: _Garmin) -> None:
+        later = datetime.now(timezone.utc) + timedelta(hours=5)
+        c = GarminConnectClient("key", bearer="b", bearer_expires_at=later)
+        garmin.get_statuses = [429, 429, 200]
+        assert c.get_heart_rates(datetime.now(timezone.utc).date()) == {"restingHeartRate": 52}
+        assert garmin.slept == [30, 60]  # type: ignore[attr-defined]
+
+    def test_429_after_the_last_backoff_records_a_cooldown_and_raises(self, garmin: _Garmin) -> None:
+        later = datetime.now(timezone.utc) + timedelta(hours=5)
+        recorded: list[bool] = []
+        c = GarminConnectClient(
+            "key", bearer="b", bearer_expires_at=later, on_rate_limited=lambda: recorded.append(True) or 3600
+        )
         garmin.get_statuses = [429]
-        with pytest.raises(GarminConnectRateLimitError):
+        with pytest.raises(GarminConnectRateLimitError) as raised:
             c.get_heart_rates(datetime.now(timezone.utc).date())
+        assert garmin.slept == list(garmin_client.BACKOFF_SECONDS)  # type: ignore[attr-defined]
+        assert recorded == [True]
+        assert raised.value.retry_after_seconds == 3600
 
     def test_a_rejected_key_calls_back_and_raises(self, garmin: _Garmin) -> None:
         garmin.token_status = 401
@@ -144,11 +166,11 @@ class TestCredentials:
     ) -> None:
         user = UserFactory()
         connection = credentials.store_api_key(db, user.id, "plain-key")
-        source = DataSourceFactory(user=user, provider="garmin_connect", device_model="fenix 8")
+        source = DataSourceFactory(user=user, provider="garmin_connect", device_model="Watch Model A")
         EventRecordFactory(data_source=source)
 
         client = credentials.client_for(db, user.id)
-        assert client.get_last_used_device_model() == "fenix 8"
+        assert client.get_last_used_device_model() == "Watch Model A"
 
         connection.token_expires_at = datetime.now(timezone.utc)  # force a re-exchange
         db.commit()
@@ -157,6 +179,23 @@ class TestCredentials:
             credentials.client_for(db, user.id).get_heart_rates(datetime.now(timezone.utc).date())
         db.refresh(connection)
         assert connection.status == ConnectionStatus.EXPIRED
+
+    def test_cooldown_doubles_and_blocks_new_clients_until_it_ends(self, db: Session, master_key: None) -> None:
+        from app.integrations.redis_client import get_redis_client  # noqa: PLC0415
+
+        user = UserFactory()
+        redis = get_redis_client()
+        redis.delete(f"garmin_connect:strikes:{user.id}", f"garmin_connect:cooldown:{user.id}")
+
+        assert credentials.record_rate_limit(user.id) == 3600
+        assert credentials.record_rate_limit(user.id) == 7200
+        assert 0 < credentials.cooldown_remaining(user.id) <= 7200
+        with pytest.raises(GarminConnectRateLimitError) as raised:
+            credentials.client_for(db, user.id)
+        assert raised.value.retry_after_seconds is not None
+
+        redis.delete(f"garmin_connect:strikes:{user.id}", f"garmin_connect:cooldown:{user.id}")
+        assert credentials.cooldown_remaining(user.id) == 0
 
     def test_no_linked_key_is_a_clear_error(self, db: Session, master_key: None) -> None:
         with pytest.raises(GarminConnectClientError, match="pairing page"):
@@ -263,7 +302,7 @@ def test_workout_without_device_name_takes_the_known_device() -> None:
         connection_repo=UserConnectionRepository(),
         provider_name="garmin_connect",
         api_base_url="https://connect.garmin.com",
-        client=GarminConnectClient("key", device_model="EPIX Gen2"),
+        client=GarminConnectClient("key", device_model="Watch Model A"),
     )
     raw = {
         "activityId": 1,
@@ -273,6 +312,6 @@ def test_workout_without_device_name_takes_the_known_device() -> None:
         "manufacturer": "GARMIN",
     }
     record, _ = workouts._normalize_workout(raw, uuid4())
-    assert record.device_model == "EPIX Gen2"
-    record, _ = workouts._normalize_workout({**raw, "deviceName": "Forerunner 965"}, uuid4())
-    assert record.device_model == "Forerunner 965"
+    assert record.device_model == "Watch Model A"
+    record, _ = workouts._normalize_workout({**raw, "deviceName": "Watch Model B"}, uuid4())
+    assert record.device_model == "Watch Model B"

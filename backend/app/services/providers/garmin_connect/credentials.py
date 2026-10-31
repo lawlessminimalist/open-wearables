@@ -24,11 +24,52 @@ from app.schemas.auth.connection_status import ConnectionStatus
 from app.services.providers.garmin_connect.client import (
     GarminConnectClient,
     GarminConnectClientError,
+    GarminConnectRateLimitError,
     exchange_api_key,
 )
 
 PROVIDER = "garmin_connect"
 _connections = UserConnectionRepository()
+
+# Per-user cooldown after a 429. Garmin sends no Retry-After, so back off by doubling: 1h,
+# 2h, 4h ... capped at a day. Strikes are forgotten 48 hours after the last one.
+COOLDOWN_BASE_SECONDS = 3600
+COOLDOWN_MAX_SECONDS = 86400
+_STRIKE_MEMORY_SECONDS = 2 * 86400
+
+
+def _redis():  # noqa: ANN202
+    """Redis, or None when it is unreachable: pacing still applies, only the cooldown is lost."""
+    try:
+        from app.integrations.redis_client import get_redis_client  # noqa: PLC0415
+
+        client = get_redis_client()
+        client.ping()
+        return client
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def cooldown_remaining(user_id: UUID) -> int:
+    """Seconds left in the user's Garmin cooldown, 0 when none."""
+    redis = _redis()
+    if redis is None:
+        return 0
+    ttl = redis.ttl(f"garmin_connect:cooldown:{user_id}")
+    return max(int(ttl), 0) if ttl is not None else 0
+
+
+def record_rate_limit(user_id: UUID) -> int:
+    """Start (or extend) the user's cooldown after a 429 and return its length in seconds."""
+    redis = _redis()
+    if redis is None:
+        return COOLDOWN_BASE_SECONDS
+    strikes_key = f"garmin_connect:strikes:{user_id}"
+    strikes = int(redis.incr(strikes_key))
+    redis.expire(strikes_key, _STRIKE_MEMORY_SECONDS)
+    seconds = min(COOLDOWN_BASE_SECONDS * 2 ** (strikes - 1), COOLDOWN_MAX_SECONDS)
+    redis.set(f"garmin_connect:cooldown:{user_id}", strikes, ex=seconds)
+    return seconds
 
 
 class MasterKeyMissingError(GarminConnectClientError):
@@ -97,7 +138,15 @@ def _known_device_model(db: DbSession, user_id: UUID) -> str | None:
 
 
 def client_for(db: DbSession, user_id: UUID) -> GarminConnectClient:
-    """The Personal API client for one user, from their active garmin_connect connection."""
+    """The Personal API client for one user, from their active garmin_connect connection.
+
+    Refuses while the user is cooling down from a 429, before any request reaches Garmin.
+    """
+    if (remaining := cooldown_remaining(user_id)) > 0:
+        raise GarminConnectRateLimitError(
+            f"Garmin is cooling down for this user after a rate limit; {remaining}s left",
+            retry_after_seconds=remaining,
+        )
     connection = _connections.get_active_connection(db, user_id, PROVIDER)
     if connection is None or not connection.refresh_token:
         raise GarminConnectClientError(
@@ -123,4 +172,5 @@ def client_for(db: DbSession, user_id: UUID) -> GarminConnectClient:
         device_model=_known_device_model(db, user_id),
         on_new_bearer=_save_bearer,
         on_key_rejected=_expire,
+        on_rate_limited=lambda: record_rate_limit(user_id),
     )
