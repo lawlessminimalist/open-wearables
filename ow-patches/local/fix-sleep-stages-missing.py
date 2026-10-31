@@ -59,7 +59,9 @@ def normalize_sleep(self, raw_sleep: dict[str, Any], user_id: UUID) -> dict[str,
     """
     normalized = _upstream_normalize_sleep(self, raw_sleep, user_id)
 
-    stage_seconds: dict[str, int] = {"deep": 0, "light": 0, "rem": 0, "awake": 0}
+    # A stage the response never mentions stays None, matching upstream #1953
+    # (95223ea6): an unreported stage is unknown, not zero minutes.
+    stage_seconds: dict[str, int | None] = {"deep": None, "light": None, "rem": None, "awake": None}
     for entry in raw_sleep.get("sleep_stages", []) or []:
         raw_type = entry.get("type")
         if not raw_type:
@@ -69,15 +71,15 @@ def normalize_sleep(self, raw_sleep: dict[str, Any], user_id: UUID) -> dict[str,
             continue
         seconds = entry.get("stage_time") or entry.get("duration") or 0
         try:
-            stage_seconds[canonical] += int(seconds)
+            stage_seconds[canonical] = (stage_seconds[canonical] or 0) + int(seconds)
         except (TypeError, ValueError):
             continue
 
     normalized["stages"] = {
-        "deep_seconds": int(stage_seconds["deep"]),
-        "light_seconds": int(stage_seconds["light"]),
-        "rem_seconds": int(stage_seconds["rem"]),
-        "awake_seconds": int(stage_seconds["awake"]),
+        "deep_seconds": stage_seconds["deep"],
+        "light_seconds": stage_seconds["light"],
+        "rem_seconds": stage_seconds["rem"],
+        "awake_seconds": stage_seconds["awake"],
     }
     return normalized
 

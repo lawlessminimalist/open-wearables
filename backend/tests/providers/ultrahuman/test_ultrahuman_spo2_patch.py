@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from sqlalchemy.orm import Session
 
-from app.models import DataPointSeries, DataSource, SeriesTypeDefinition
+from app.models import DataSource, SeriesAggregate, SeriesSample, SeriesTypeDefinition
 from app.schemas.enums.series_types import SeriesType
 from app.services.providers.factory import ProviderFactory
 from app.services.providers.sync_247_result import Sync247Result
@@ -23,11 +23,11 @@ _DAY = datetime(2024, 1, 15, tzinfo=timezone.utc)
 
 def _rows(db: Session, user_id: object, series: SeriesType) -> list[tuple[float, datetime, str | None]]:
     q = (
-        db.query(DataPointSeries.value, DataPointSeries.recorded_at, DataSource.source)
+        db.query(SeriesSample.value, SeriesSample.recorded_at, DataSource.source)
         .join(DataSource)
-        .join(SeriesTypeDefinition, DataPointSeries.series_type_definition_id == SeriesTypeDefinition.id)
+        .join(SeriesTypeDefinition, SeriesSample.series_type_definition_id == SeriesTypeDefinition.id)
         .filter(DataSource.user_id == user_id, SeriesTypeDefinition.code == series.value)
-        .order_by(DataPointSeries.recorded_at)
+        .order_by(SeriesSample.recorded_at)
     )
     return [(float(v), r, s) for v, r, s in q.all()]
 
@@ -93,8 +93,16 @@ class TestUltrahumanSpo2RespiratoryPatch:
         ]
 
     def test_daily_scalar_series_carry_source(self, db: Session, sample_ultrahuman_api_response: dict) -> None:
+        # Since upstream #1931 a daily scalar carries period=, so it lands in
+        # series_aggregate only. Its data_source must still be the source-labelled row.
         user_id, _ = _sync(db, copy.deepcopy(sample_ultrahuman_api_response))
 
-        rhr = _rows(db, user_id, SeriesType.resting_heart_rate)
-        assert rhr
-        assert {s for _, _, s in rhr} == {"ultrahuman"}
+        sources = (
+            db.query(DataSource.source)
+            .join(SeriesAggregate, SeriesAggregate.data_source_id == DataSource.id)
+            .join(SeriesTypeDefinition, SeriesAggregate.series_type_definition_id == SeriesTypeDefinition.id)
+            .filter(DataSource.user_id == user_id, SeriesTypeDefinition.code == SeriesType.resting_heart_rate.value)
+            .all()
+        )
+        assert sources
+        assert {s for (s,) in sources} == {"ultrahuman"}
