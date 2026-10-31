@@ -252,7 +252,10 @@ class GarminConnectWorkouts(BaseWorkoutsTemplate):
             category="workout",
             type=workout_type.value,
             source_name="Garmin Connect",
-            device_model=raw.get("deviceName"),
+            # The Personal API's activity summaries carry no deviceName (probe 2026-11-01), so
+            # fall back to the user's known device; otherwise every workout lands on a
+            # device-less data source and splits the history.
+            device_model=raw.get("deviceName") or self.client.get_last_used_device_model(),
             duration_seconds=duration_s,
             start_datetime=start_dt,
             end_datetime=end_dt,

@@ -249,3 +249,30 @@ class TestLoadAndSaveAllAborts:
         handler, counters = self._handler(KeyError("sleepMovement"))
         self._run(handler)
         assert counters["calls"] == 3 * 5
+
+
+def test_workout_without_device_name_takes_the_known_device() -> None:
+    """Personal API activity summaries carry no deviceName; the workout must keep the user's device."""
+    from app.models import EventRecord  # noqa: PLC0415
+    from app.repositories.event_record_repository import EventRecordRepository  # noqa: PLC0415
+    from app.repositories.user_connection_repository import UserConnectionRepository  # noqa: PLC0415
+    from app.services.providers.garmin_connect.workouts import GarminConnectWorkouts  # noqa: PLC0415
+
+    workouts = GarminConnectWorkouts(
+        workout_repo=EventRecordRepository(EventRecord),
+        connection_repo=UserConnectionRepository(),
+        provider_name="garmin_connect",
+        api_base_url="https://connect.garmin.com",
+        client=GarminConnectClient("key", device_model="EPIX Gen2"),
+    )
+    raw = {
+        "activityId": 1,
+        "activityType": {"typeKey": "running"},
+        "startTimeGMT": "2026-10-30 21:14:00",
+        "duration": 3600.0,
+        "manufacturer": "GARMIN",
+    }
+    record, _ = workouts._normalize_workout(raw, uuid4())
+    assert record.device_model == "EPIX Gen2"
+    record, _ = workouts._normalize_workout({**raw, "deviceName": "Forerunner 965"}, uuid4())
+    assert record.device_model == "Forerunner 965"
