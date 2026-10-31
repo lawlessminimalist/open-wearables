@@ -29,7 +29,7 @@ class _StatsClient:
         return self._stats
 
     def get_last_used_device_model(self) -> str | None:
-        return "fenix 8"
+        return "Watch Model A"
 
 
 def _provider_days(db: Session) -> list[tuple[str, date, str, Decimal | None]]:
@@ -41,7 +41,7 @@ def _provider_days(db: Session) -> list[tuple[str, date, str, Decimal | None]]:
 
 
 def test_new_daily_totals_become_provider_day_rows_on_garmins_date(db: Session) -> None:
-    user = UserFactory(timezone="Australia/Brisbane")
+    user = UserFactory(timezone="Asia/Tokyo")
     handler = GarminConnect247Data(
         provider_name="garmin_connect",
         api_base_url="https://connect.garmin.com",
