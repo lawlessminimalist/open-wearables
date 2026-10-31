@@ -77,6 +77,21 @@ HISTORY_RULES: tuple[HistoryRule, ...] = (
         day=DayAnchor.LOCAL,
     ),
     HistoryRule(frozenset({ProviderName.GARMIN}), _own(SeriesType.resting_heart_rate), day=DayAnchor.LOCAL),
+    # FORK (garmin-connect-history-rule): garmin_connect daily totals sit at 00:00 UTC of Garmin's own
+    # calendar date with no period; without this rule the rollup (which skips daily totals) drops them.
+    HistoryRule(
+        frozenset({ProviderName.GARMIN_CONNECT}),
+        _own(
+            SeriesType.steps,
+            SeriesType.active_energy,
+            SeriesType.basal_energy,
+            SeriesType.flights_climbed,
+            SeriesType.distance_walking_running,
+            SeriesType.exercise_time,
+        ),
+        where=_DAILY_TOTAL,
+        day=DayAnchor.UTC_DATE,
+    ),
     # Garmin lastNightAvg carries the bare summaryId; its per-reading values carry "summaryId:offset".
     HistoryRule(
         frozenset({ProviderName.GARMIN}),
