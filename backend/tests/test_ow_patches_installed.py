@@ -87,11 +87,8 @@ _EXPECTED_PATCHED: list[tuple[str, str, str]] = [
         "EventRecordRepository._get_sleep_sessions",
         "fix-sleep-summary-utc-bucketing",
     ),
-    (
-        "app.repositories.data_point_series_repository",
-        "DataPointSeriesRepository.get_daily_activity_aggregates",
-        "fix-activity-summary-utc-bucketing",
-    ),
+    # DataPointSeriesRepository.get_daily_activity_aggregates is no longer patched:
+    # upstream deleted it in the aggregates rewrite (2026-10-31 reconcile).
     (
         "app.repositories.data_point_series_repository",
         "DataPointSeriesRepository.get_daily_active_minutes",
