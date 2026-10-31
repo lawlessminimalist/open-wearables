@@ -25,7 +25,8 @@ CASES = HERE / "cases"
 
 
 def run(command: str) -> tuple[str, str]:
-    payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": command}})
+    # The harness always sends cwd; message-file cases resolve against the repo root.
+    payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(HERE.parent.parent)})
     res = subprocess.run([str(HOOK)], input=payload, capture_output=True, text=True, timeout=20)
     if res.returncode != 0:
         return "ERROR", f"exit {res.returncode}: {res.stderr.strip()[:200]}"

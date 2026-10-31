@@ -45,3 +45,27 @@ DENY|gh pr create --repo lawlessminimalist/open-wearables --body "see the-moment
 DENY|gh repo delete lawlessminimalist/other --yes
 ALLOW|gh repo view lawlessminimalist/open-wearables
 ALLOW|echo done
+# Rule 4: no AI attribution in commits or GitHub text
+DENY|git commit -m "fix: x" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+DENY|git commit --amend -m "fix: x" -m "co-authored-by: claude <someone@example.com>"
+DENY|git -C backend commit -m "x" -m "Co-Authored-By: Bot <noreply@anthropic.com>"
+DENY|gh pr create --repo lawlessminimalist/open-wearables --title x --body "🤖 Generated with [Claude Code](https://claude.com/claude-code)"
+DENY|gh pr edit 21 --repo lawlessminimalist/open-wearables --body "Generated with Claude Code"
+DENY|gh pr create --repo lawlessminimalist/open-wearables --title x --body-file .claude/hooks/cases/attributed_body.md
+DENY|git commit -F .claude/hooks/cases/attributed_body.md
+DENY|bash -c 'git commit -m "x" -m "Co-Authored-By: Claude <noreply@anthropic.com>"'
+ALLOW|git commit -m "fix: x" -m "Co-Authored-By: Jane Doe <jane@example.com>"
+ALLOW|git commit -m "docs: explain why commits drop Co-Authored-By trailers for Claude"
+ALLOW|gh pr create --repo lawlessminimalist/open-wearables --title x --body-file .claude/hooks/cases/clean_body.md
+ALLOW|git log --format=%B | grep -c 'Co-Authored-By: Claude'
+ALLOW|grep -rn 'noreply@anthropic.com' CHANGELOG.md
+ALLOW|gh pr view 21 --repo lawlessminimalist/open-wearables --json body
+# Rule 4 review follow-ups (2026-10-31): attached -F forms, per-segment scope, files written in the same command
+DENY|git commit -F.claude/hooks/cases/attributed_body.md
+DENY|git commit -aF .claude/hooks/cases/attributed_body.md
+ALLOW|git commit -F does-not-exist-anywhere.txt
+ALLOW|git commit -F .claude/hooks/cases/clean_body.md
+ALLOW|git commit -m wip && grep -c noreply@anthropic.com CHANGELOG.md
+ALLOW|git tag -l && git log --grep 'Generated with Claude Code'
+ALLOW|git notes show HEAD && grep 'Co-Authored-By: Claude' x.txt
+DENY|git tag -a v1 -m "Generated with Claude Code"

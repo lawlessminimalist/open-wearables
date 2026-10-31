@@ -27,3 +27,46 @@ print("gh pr create --title x")
 print("the-momentum/open-wearables")
 PY
 git add -A && git commit -q -m "docs" && git push -q origin feature
+====
+DENY
+git commit -m "$(cat <<'MSG'
+fix(backend): something
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+MSG
+)"
+====
+DENY
+gh pr create --repo lawlessminimalist/open-wearables --title x --body-file - <<'MSG'
+Body.
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+MSG
+====
+ALLOW
+git commit -m "$(cat <<'MSG'
+fix(backend): something
+
+A body with no attribution.
+MSG
+)"
+====
+ALLOW
+cat > notes.md <<'MSG'
+Co-Authored-By: Claude <noreply@anthropic.com> is not allowed here
+MSG
+echo written
+====
+DENY
+cat > /tmp/ow-body-not-yet.md <<'MD'
+Body.
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+MD
+gh pr create --repo lawlessminimalist/open-wearables --title x --body-file /tmp/ow-body-not-yet.md
+====
+ALLOW
+cat > /tmp/ow-body-not-yet.md <<'MD'
+A clean body.
+MD
+gh pr create --repo lawlessminimalist/open-wearables --title x --body-file /tmp/ow-body-not-yet.md

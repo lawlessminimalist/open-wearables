@@ -187,6 +187,19 @@ fork-internal reconcile PR upstream (their #1611). Three layers now prevent it:
    It fails closed if python3 is missing. Known false positive: a PR body citing
    upstream by full slug — use `--body-file`.
 
+**No AI attribution in commits or PR text** (convention since 2026-10-19; the harness
+added trailers to the 2026-10-31 reconcile anyway). Four layers, one pattern
+(`ATTRIBUTION_RE` in `block_upstream_pr.py`):
+
+1. `.claude/settings.json` `attribution` keys switch the harness's trailer and PR line off.
+2. Rule 4 of the Bash guard denies a commit, tag or `gh` write whose own text, heredoc or
+   `-F`/`--body-file` file carries attribution. It guesses from shell text.
+3. Per clone: `git config core.hooksPath .githooks`, which enables `.githooks/commit-msg`,
+   the check on the real message (covers `$(cat f)`, `--amend --no-edit`, the editor and
+   commits made outside Claude Code).
+4. `.github/workflows/no-ai-attribution.yml` fails a PR whose fork commits (those not on
+   upstream/main) or description carry it, and re-runs on description edits.
+
 Use the **`upstream-reconcile` skill** (`.claude/skills/upstream-reconcile/`).
 It encodes the full procedure, including the shadow audit that `check_upstream.py`
 cannot do on its own.

@@ -1,0 +1,30 @@
+#!/usr/bin/env python3
+"""git commit-msg hook: refuse a commit message that carries AI attribution.
+
+Checks the final message git is about to write, so it covers every path the
+Claude Bash guard can only guess at from shell text: -m "$(cat file)", -F with any
+path, --amend --no-edit, -C <sha>, the editor, and commits made outside Claude Code.
+The pattern lives in .claude/hooks/block_upstream_pr.py (ATTRIBUTION_RE) so the
+Bash guard, this hook and the CI job cannot drift. Enabled per clone with
+`git config core.hooksPath .githooks` (FORK.md section 5). A missing python3 makes
+git abort the commit, so it fails closed.
+"""
+
+import sys
+from pathlib import Path
+
+root = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(root / ".claude" / "hooks"))
+from block_upstream_pr import ATTRIBUTION_RE  # noqa: E402
+
+message = Path(sys.argv[1]).read_text(errors="replace")
+# Lines git strips (comments) are not part of the commit; ignore them.
+body = "\n".join(line for line in message.splitlines() if not line.startswith("#"))
+match = ATTRIBUTION_RE.search(body)
+if match:
+    sys.stderr.write(
+        f"commit-msg: this message carries AI attribution ({match.group(0)!r}).\n"
+        "Repo convention since 2026-10-19: no Claude Co-Authored-By trailer and no\n"
+        "'Generated with Claude Code' line. Remove it and commit again.\n"
+    )
+    sys.exit(1)
