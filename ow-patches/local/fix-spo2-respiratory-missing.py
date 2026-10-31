@@ -30,12 +30,20 @@ active_minutes → exercise_time). The patch no longer replaces
 load_and_save_all at all: upstream's runs unshadowed and calls the
 `_save_daily_activity` below.
 
+Rebased 2026-10-31 onto upstream 8adb8d0b. #1931 (4ff8f487) gave
+_save_daily_activity a `day: date | None = None` parameter, which
+load_and_save_all now passes positionally, and stamps the daily scalar rows with
+`period=CalendarPeriod.local_day(recorded_at)` so they reach the aggregate tables
+the 1day/1week/1month timeseries and summaries rollup read. The four-arg copy
+raised TypeError on every day, swallowed by Sync247Run.step, so every Ultrahuman
+activity_samples step would have failed after the merge.
+
 Composes with fix-hrv-source-unknown, which owns _build_activity_samples
 (adds `source=` to the intraday rows built from these buckets).
 """
 
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
@@ -43,7 +51,7 @@ from uuid import UUID, uuid4
 from app.database import DbSession
 from app.repositories.data_point_series_repository import WriteCounts
 from app.schemas.enums import daily_total_flag
-from app.schemas.model_crud.activities.data_point_series import TimeSeriesSampleCreate
+from app.schemas.model_crud.activities.data_point_series import CalendarPeriod, TimeSeriesSampleCreate
 from app.services.providers.ultrahuman.coverage import DAILY_SCALAR_SERIES
 from app.services.timeseries_service import timeseries_service
 
@@ -106,10 +114,11 @@ def _save_daily_activity(
     db: DbSession,
     user_id: UUID,
     items_by_type: dict[str, Any],
+    day: date | None = None,
 ) -> WriteCounts:
     """Persist one day's activity series plus its single-value daily metrics.
 
-    Upstream's body (d18304f8) with three FORK DELTAs marked inline.
+    Upstream's body (8adb8d0b) with three FORK DELTAs marked inline.
     """
     # FORK DELTA 1: also pass any SpO2 / respiratory variants the API returns; the
     # normalizer collapses them into one canonical bucket each. Upstream's tuple
@@ -142,6 +151,9 @@ def _save_daily_activity(
         value, day_start = scalar.get("value"), scalar.get("day_start_timestamp")
         if value is None or not day_start:
             continue
+        # day_start is the local midnight as Ultrahuman reports it, stored as the UTC instant; the day row
+        # takes the same instant, so it and the sample read as one day everywhere.
+        recorded_at = datetime.fromtimestamp(day_start, tz=timezone.utc)
         samples.append(
             TimeSeriesSampleCreate(
                 id=uuid4(),
@@ -151,10 +163,11 @@ def _save_daily_activity(
                 # (user_id, device_model, source), so a None source mints a SECOND
                 # data_source row and splits Ultrahuman history (FORK.md §3.6).
                 source=self.provider_name,
-                recorded_at=datetime.fromtimestamp(day_start, tz=timezone.utc),
+                recorded_at=recorded_at,
                 value=Decimal(str(value)),
                 series_type=series_type,
                 is_daily_total=daily_total_flag(series_type, True),
+                period=CalendarPeriod.local_day(recorded_at),
             )
         )
 
